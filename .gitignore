@@ -1,0 +1,10 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+.venv/
+
+# Future dashboard (Phase 0.5)
+node_modules/
+.next/

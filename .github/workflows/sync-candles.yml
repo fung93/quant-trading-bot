@@ -1,0 +1,31 @@
+name: sync-candles
+
+on:
+  schedule:
+    - cron: "7 * * * *" # :07 past each hour - off the top-of-hour stampede, hourly candle is closed
+  workflow_dispatch:
+
+# Overlapping runs cancel the older one rather than stacking.
+concurrency:
+  group: sync-candles
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python scripts/sync.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PYTHONUNBUFFERED: "1"
