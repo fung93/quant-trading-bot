@@ -24,6 +24,25 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # TEMPORARY diagnostic - remove once sync is green. Prints only the
+      # shape of the secret values (lengths/booleans), never the values.
+      - name: Diagnose secret shape
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'EOF'
+          import os
+          u = os.environ.get("SUPABASE_URL", "")
+          k = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+          print("URL: len=%d starts_https=%s first3=%r has_whitespace=%s looks_like_key=%s" % (
+              len(u), u.startswith("https://"), u[:3],
+              any(c.isspace() for c in u), u.startswith("eyJ")))
+          print("KEY: len=%d looks_like_key=%s looks_like_url=%s has_whitespace=%s" % (
+              len(k), k.startswith("eyJ"), k.startswith("https://"),
+              any(c.isspace() for c in k)))
+          EOF
+
       - run: python scripts/sync.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
