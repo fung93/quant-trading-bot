@@ -2,7 +2,11 @@ name: sync-candles
 
 on:
   schedule:
-    - cron: "7 * * * *" # :07 past each hour - off the top-of-hour stampede, hourly candle is closed
+    # Two slots per hour: GitHub drops scheduled runs under load (observed
+    # 2026-06-11, three consecutive skips). The sync window self-heals, so
+    # whichever slot fires catches everything up; the idempotent upsert
+    # makes the extra run free.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
 
 # Overlapping runs cancel the older one rather than stacking.

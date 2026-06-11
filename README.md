@@ -50,8 +50,10 @@ candle and never duplicates rows.
 
 ### 5. Enable the hourly sync
 
-The workflow `.github/workflows/sync-candles.yml` runs at 7 minutes past each
-hour once the repo is pushed to GitHub and the secrets from step 2 are set.
+The workflow `.github/workflows/sync-candles.yml` runs at 7 and 37 minutes
+past each hour (two slots, because GitHub occasionally drops scheduled runs
+under load — whichever slot fires self-heals any backlog) once the repo is
+pushed to GitHub and the secrets from step 2 are set.
 Trigger it once manually (Actions → sync-candles → Run workflow) to confirm
 it's green.
 
