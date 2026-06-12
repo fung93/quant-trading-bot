@@ -1,0 +1,11 @@
+# Phase 1 backtesting lab - local only, never installed by CI.
+# Kept separate from the root requirements.txt so the hourly GitHub Actions
+# sync job stays lean (it installs the root file on every run).
+#   pip install -r backtest/requirements.txt
+backtesting>=0.6
+pandas>=2.2
+numpy>=1.26
+matplotlib>=3.8
+pyarrow>=15
+supabase>=2.4
+python-dotenv>=1.0

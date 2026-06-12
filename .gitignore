@@ -8,3 +8,6 @@ __pycache__/
 # Future dashboard (Phase 0.5)
 node_modules/
 .next/
+
+# Backtest data cache (Phase 1)
+backtest/data/
