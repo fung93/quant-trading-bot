@@ -194,6 +194,7 @@ strategies (
 
 - Python for data/backtest/signal code; TypeScript only in `dashboard/`
 - All secrets via GitHub Actions secrets / Vercel env vars — never committed. Service role key lives ONLY in GitHub Actions; the dashboard uses the anon key with RLS
+  - *Phase 2 amendment (2026-06-12, approved in PHASE_2_PROMPT):* the service role key additionally lives in a **server-side** Vercel env var, used exclusively by Next.js API routes (the PIN-gated `/api/log` write path for manual fill logging) — never in `NEXT_PUBLIC_` vars or browser bundles (verified by grep at build time)
 - This project never touches or references the Tiger Foundation Dashboard or its repo/Supabase/Vercel resources
 - All cron jobs idempotent and safe to re-run
 - Each phase is a separate milestone; do not build ahead of the current phase

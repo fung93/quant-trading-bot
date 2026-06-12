@@ -1,0 +1,44 @@
+name: signal-engine
+
+on:
+  schedule:
+    # 9 min past each 4h boundary. The job runs sync as its own first step
+    # (the "combine" option): candles are always fresh before signals, with
+    # no cross-workflow ordering to break. The hourly sync workflow still
+    # covers the other hours; double-syncing is harmless (idempotent).
+    - cron: "9 0,4,8,12,16,20 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: signal-engine
+  cancel-in-progress: false # never kill a run mid-write; runs are 4h apart
+
+jobs:
+  sync-then-signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt -r scripts/requirements-engine.txt
+
+      - name: Sync candles (freshness guarantee)
+        run: python scripts/sync.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          PYTHONUNBUFFERED: "1"
+
+      - name: Run signal engine
+        run: python scripts/signal_engine.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONUNBUFFERED: "1"

@@ -96,7 +96,7 @@ def _load_full(symbol: str, timeframe: str, refresh: bool) -> pd.DataFrame:
     return df
 
 
-def _resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
+def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
     """1h -> 4h, anchored to UTC midnight (00/04/08/...), matching Binance's
     own 4h alignment. Interior bins missing an hour (rare exchange outages)
     are kept — Binance's native 4h candles aggregate the same partial data —
@@ -116,6 +116,47 @@ def _resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def fetch_recent_4h(symbol: str, days: int = 210) -> pd.DataFrame:
+    """Last `days` of 4h candles, resampled from stored 1h rows, NO parquet
+    cache - the Phase 2 signal engine runs on stateless CI where a cache is
+    useless. Same resample_4h as the backtest loader, so the engine and the
+    lab can never disagree about what a 4h candle is."""
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    client = _get_client()
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        res = (
+            client.table("candles")
+            .select("open_time, open, high, low, close, volume")
+            .eq("symbol", symbol)
+            .eq("timeframe", "1h")
+            .gte("open_time", cutoff)
+            .order("open_time")
+            .range(offset, offset + PAGE - 1)
+            .execute()
+        )
+        if not res.data:
+            break
+        rows.extend(res.data)
+        offset += len(res.data)
+
+    if not rows:
+        raise ValueError(f"No recent 1h candles for {symbol} - is the sync running?")
+
+    df = pd.DataFrame(rows)
+    df.index = pd.to_datetime(df.pop("open_time"), utc=True).dt.tz_localize(None)
+    df.index.name = "Time"
+    df = df.rename(
+        columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}
+    ).astype(float)
+    df = resample_4h(df[["Open", "High", "Low", "Close", "Volume"]])
+    _validate(df, f"{symbol} 4h(recent)")
+    return df
+
+
 def load_candles(
     symbol: str,
     timeframe: str = "1d",
@@ -127,7 +168,7 @@ def load_candles(
     as backtesting.py requires. start/end are ISO dates; None = unbounded.
     '4h' is resampled from stored 1h candles (the DB stores 1h and 1d)."""
     if timeframe == "4h":
-        df = _resample_4h(_load_full(symbol, "1h", refresh))
+        df = resample_4h(_load_full(symbol, "1h", refresh))
     else:
         df = _load_full(symbol, timeframe, refresh)
 

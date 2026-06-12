@@ -5,9 +5,11 @@ import {
   CandlestickSeries,
   ColorType,
   createChart,
+  createSeriesMarkers,
   HistogramSeries,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type SeriesMarker,
   type Time,
   type UTCTimestamp,
@@ -18,22 +20,20 @@ export interface CandleChartProps {
   symbol: string;
   timeframe: Timeframe;
   candles: Candle[];
-  /**
-   * Reserved for Phase 1 (backtest entry/exit markers) and Phase 2 (live
-   * signal markers). Typed now so the component interface is stable;
-   * intentionally unused in Phase 0.5.
-   */
+  /** Trade markers (Phase 2): times are raw UNIX seconds UTC; the component
+   *  applies the same timezone shift as the candles. */
   markers?: SeriesMarker<Time>[];
 }
 
 const UP = "#26a69a";
 const DOWN = "#ef5350";
 
-export default function CandleChart({ symbol, timeframe, candles }: CandleChartProps) {
+export default function CandleChart({ symbol, timeframe, candles, markers }: CandleChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -117,11 +117,23 @@ export default function CandleChart({ symbol, timeframe, candles }: CandleChartP
       }))
     );
 
+    if (markers?.length) {
+      const shifted = markers.map((m) => ({
+        ...m,
+        time: ((m.time as number) + tzShift) as UTCTimestamp,
+      }));
+      if (markersRef.current) {
+        markersRef.current.setMarkers(shifted);
+      } else {
+        markersRef.current = createSeriesMarkers(candleSeries, shifted);
+      }
+    }
+
     chart.applyOptions({
       timeScale: { timeVisible: timeframe === "1h", secondsVisible: false },
     });
     chart.timeScale().fitContent();
-  }, [candles, timeframe]);
+  }, [candles, timeframe, markers]);
 
   return (
     <section className="rounded-lg border border-white/10 bg-white/[0.02] p-3">

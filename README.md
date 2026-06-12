@@ -69,6 +69,55 @@ Prints, per symbol/timeframe: row count, earliest/latest candle, and any gaps
 gaps from exchange maintenance — if a re-fetch returns nothing, the gap is on
 Binance's side and is fine to leave.
 
+## Phase 2 — paper trading (signal engine)
+
+`tsmom_v1` runs every 4h via `.github/workflows/signal-engine.yml` (the job
+syncs candles first, then evaluates the last closed 4h bar). ETH is the
+primary book — you log fills manually at the dashboard `/log` page. BTC is
+observational — the engine auto-fills hypothetical trades at next-bar-open
+and they never touch equity or the kill switch.
+
+### One-time setup
+
+1. Run `db/migrations/003_paper_trading.sql` in the Supabase SQL editor.
+2. Telegram bot: message **@BotFather** → `/newbot` → name it (e.g.
+   `quantbot_signals_bot`) → copy the **token**. Then send any message to
+   your new bot, and open
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser — your
+   **chat id** is at `result[0].message.chat.id`.
+3. GitHub repo secrets (Settings → Secrets → Actions): add
+   `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+4. Vercel env vars (server-side, NOT `NEXT_PUBLIC_`): add
+   `SUPABASE_SERVICE_ROLE_KEY` and `LOG_PIN` (a 6-digit PIN you choose) —
+   these power the PIN-gated `/api/log` write route. Redeploy.
+
+### Position sizing (worked example)
+
+Equity $230, risk 1% = **$2.30**. ETH at $1,650 with ATR(14) = $38 →
+stop = 1650 − 2×38 = **$1,574** (distance $76). Units = 2.30 / 76 =
+**0.030263 ETH** = **$49.93** (21.7% of equity — under the 95% cap). If ATR
+were tiny (say $4 → distance $8), the uncapped size would be ~287% of
+equity; the cap clamps it to **$218.50 (95%)**, accepting less than 1%
+realized risk rather than leverage. Spot only, always.
+
+### Kill switch
+
+10% peak-to-trough on paper equity halts new entries (exits still
+managed) and alerts via Telegram. Manual reset, deliberately — run in the
+Supabase SQL editor after you have reviewed the drawdown:
+
+```sql
+update engine_state
+set value = '{"active": false}'::jsonb, updated_at = now()
+where key = 'kill_switch';
+```
+
+### Daily rhythm
+
+08:00 MYT heartbeat on Telegram (equity, open positions, engine alive).
+Silence at other times means "no signal", never "engine broken" — a broken
+run shows red in GitHub Actions and skips the heartbeat.
+
 ## Notes
 
 - Market data comes from `data-api.binance.vision` — Binance's official
