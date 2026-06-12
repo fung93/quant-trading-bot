@@ -2,13 +2,14 @@
 
 Read BUILD_PLAN.md before any work.
 
-- **Current phase: 1b complete — see PHASE1B_VERDICT.md.**
-  Phase 1 (daily): no validated edge, sample starvation (6 trades/5.5y).
-  Phase 1b (4h): frequency fixed (~6×), edge still absent — negative on
-  training both symbols, ETH 0/12 robustness combos positive. The MA-cross
-  family is rejected on these assets; future hypotheses should change the
-  mechanism, not the knobs. Phase 2 remains gated on a strategy with a
-  validated edge.
+- **Current phase: 1c complete — see PHASE1C_VERDICT.md.**
+  Ledger so far (backtest/reports/EXPERIMENT_LEDGER.md): MA-cross rejected
+  twice (1d sample starvation; 4h family-level failure). Donchian breakout
+  (donchian_v1, 4h): **weak/uncertain** — first family to pass training on
+  both assets with a stable, asset-agreeing grid region, but validation
+  mixed (BTC −0.12%/19 trades, positive before fees; ETH +3.95%/7) and all
+  samples <30. Stopping rule not triggered. Phase 2 remains gated on a
+  validated edge; next candidates are pre-registered in the 1c verdict.
 - Do not build beyond the current phase.
 - This project is fully separate from all of the owner's other projects —
   never reference, import from, or modify their repos, Supabase projects, or

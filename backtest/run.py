@@ -41,20 +41,23 @@ STRATEGIES = {
     "ma_cross_v1": ("strategies.ma_cross_v1", "MaCrossV1"),
     "rsi_revert_v1": ("strategies.rsi_revert_v1", "RsiRevertV1"),
     "ma_cross_v1_4h": ("strategies.ma_cross_v1_4h", "MaCrossV1_4h"),
+    "donchian_v1": ("strategies.donchian_v1", "DonchianV1"),
 }
 WINDOWS = {"train": TRAIN, "validation": VALIDATION, "full": (None, None)}
 
-# Decision timeframe per strategy version (Phase 1b: 4h experiment).
+# Decision timeframe per strategy version.
 STRATEGY_TIMEFRAME = {
     "ma_cross_v1": "1d",
     "rsi_revert_v1": "1d",
     "ma_cross_v1_4h": "4h",
+    "donchian_v1": "4h",
 }
 
 PARAM_NAMES = {
     "ma_cross_v1": ["fast_n", "slow_n", "regime_n", "atr_mult", "vol_n", "atr_n", "risk_pct"],
     "rsi_revert_v1": ["rsi_n", "entry_th", "exit_th", "regime_n", "atr_mult", "atr_n", "risk_pct"],
     "ma_cross_v1_4h": ["fast_n", "slow_n", "regime_n", "atr_mult", "vol_n", "atr_n", "risk_pct"],
+    "donchian_v1": ["entry_days", "exit_days", "regime_days", "atr_mult", "atr_n", "risk_pct"],
 }
 
 

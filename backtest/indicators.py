@@ -23,6 +23,18 @@ def rsi(values, n: int = 14) -> np.ndarray:
     return out.to_numpy()
 
 
+def prior_high(values, n: int) -> np.ndarray:
+    """Highest value of the PRECEDING n bars. The .shift(1) excludes the
+    current bar - without it a breakout close could compare against its own
+    bar's high (self-referential lookahead)."""
+    return pd.Series(np.asarray(values, dtype=float)).rolling(n).max().shift(1).to_numpy()
+
+
+def prior_low(values, n: int) -> np.ndarray:
+    """Lowest value of the PRECEDING n bars (shifted: excludes current bar)."""
+    return pd.Series(np.asarray(values, dtype=float)).rolling(n).min().shift(1).to_numpy()
+
+
 def atr(high, low, close, n: int = 14) -> np.ndarray:
     h = pd.Series(np.asarray(high, dtype=float))
     l = pd.Series(np.asarray(low, dtype=float))

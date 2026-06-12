@@ -8,6 +8,7 @@ human judgment.
 
     python backtest/robustness.py                              # ma_cross_v1 (1d)
     python backtest/robustness.py --strategy ma_cross_v1_4h    # Phase 1b (4h)
+    python backtest/robustness.py --strategy donchian_v1       # Phase 1c (4h)
 """
 
 import argparse
@@ -22,8 +23,21 @@ from backtest.config import MIN_TRADES, SYMBOLS, TRAIN
 from backtest.run import REPORT_DIR, run_backtest
 
 MA_GRID = [(10, 50), (20, 50), (20, 100), (50, 200)]
+DONCHIAN_ENTRY_GRID = [10, 20, 55]  # days; exit = round(entry / 2)
 ATR_GRID = [1.5, 2.0, 3.0]
-GRID_STRATEGIES = ["ma_cross_v1", "ma_cross_v1_4h"]
+GRID_STRATEGIES = ["ma_cross_v1", "ma_cross_v1_4h", "donchian_v1"]
+
+
+def grid_cells(strategy: str) -> tuple[str, list[tuple[str, dict]]]:
+    """(combo-column header, [(combo label, params), ...]) for one strategy."""
+    if strategy == "donchian_v1":
+        cells = [
+            (f"{entry}d/{round(entry / 2)}d", {"entry_days": entry, "exit_days": round(entry / 2)})
+            for entry in DONCHIAN_ENTRY_GRID
+        ]
+        return "entry/exit", cells
+    cells = [(f"{fast}/{slow}", {"fast_n": fast, "slow_n": slow}) for fast, slow in MA_GRID]
+    return "fast/slow", cells
 
 
 def main() -> None:
@@ -44,22 +58,24 @@ def main() -> None:
         "",
     ]
 
+    combo_header, combos = grid_cells(strategy)
+
     for symbol in SYMBOLS:
         lines += [
             f"## {symbol}",
             "",
-            "| fast/slow | ATR x | trades | expectancy/trade | total return | max DD |",
+            f"| {combo_header} | ATR x | trades | expectancy/trade | total return | max DD |",
             "|-----------|-------|--------|------------------|--------------|--------|",
         ]
         positives = 0
         cells = 0
-        for fast, slow in MA_GRID:
+        for label, combo_params in combos:
             for atr_mult in ATR_GRID:
                 r = run_backtest(
                     strategy,
                     symbol,
                     "train",
-                    params={"fast_n": fast, "slow_n": slow, "atr_mult": atr_mult},
+                    params={**combo_params, "atr_mult": atr_mult},
                 )
                 cells += 1
                 exp = r["expectancy_pct"]
@@ -68,7 +84,7 @@ def main() -> None:
                 weak = f" (<{MIN_TRADES}: weak)" if r["weak"] else ""
                 exp_s = "n/a (0 trades)" if exp != exp else f"{exp:+.2f}%"
                 lines.append(
-                    f"| {fast}/{slow} | {atr_mult} | {r['n_trades']}{weak} "
+                    f"| {label} | {atr_mult} | {r['n_trades']}{weak} "
                     f"| {exp_s} | {r['total_return_pct']:+.2f}% | {r['max_dd_pct']:.2f}% |"
                 )
         lines += [

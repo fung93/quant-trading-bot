@@ -1,10 +1,9 @@
-"""Entry-funnel report for the ma_cross family (Phase 1b Task 3).
+"""Entry-funnel report: where do signals die, per symbol and window?
 
-Counts, per symbol and window: raw fast/slow cross-ups -> survivors of the
-regime filter -> survivors of the volume gate. Sample starvation was the
-Phase 1 diagnosis; this measures exactly where signals die.
+ma_cross family: raw fast/slow cross-ups -> + regime filter -> + volume gate.
+donchian_v1:     breakout bars (close > prior 20-day high) -> + regime filter.
 
-    python backtest/funnel.py --strategy ma_cross_v1_4h
+    python backtest/funnel.py --strategy donchian_v1
 """
 
 import argparse
@@ -18,19 +17,18 @@ sys.path.insert(0, str(REPO_ROOT))
 import numpy as np
 
 from backtest.config import SYMBOLS, TRAIN, VALIDATION
-from backtest.indicators import sma
+from backtest.indicators import prior_high, sma
 from backtest.loader import load_candles
 from backtest.run import REPORT_DIR, STRATEGY_TIMEFRAME, get_strategy
 
 WINDOWS = {"train": TRAIN, "validation": VALIDATION}
 
 
-def funnel(symbol: str, timeframe: str, window: tuple, fast_n: int, slow_n: int,
-           regime_n: int, vol_n: int) -> tuple[int, int, int]:
+def funnel_ma(symbol: str, timeframe: str, window: tuple, cls) -> tuple[int, int, int]:
     df = load_candles(symbol, timeframe, start=window[0], end=window[1])
     close, vol = df["Close"].to_numpy(), df["Volume"].to_numpy()
-    f, s = sma(close, fast_n), sma(close, slow_n)
-    r, v = sma(close, regime_n), sma(vol, vol_n)
+    f, s = sma(close, cls.fast_n), sma(close, cls.slow_n)
+    r, v = sma(close, cls.regime_n), sma(vol, cls.vol_n)
 
     prev_f, prev_s = np.roll(f, 1), np.roll(s, 1)
     cross_up = (f > s) & (prev_f <= prev_s)
@@ -43,31 +41,54 @@ def funnel(symbol: str, timeframe: str, window: tuple, fast_n: int, slow_n: int,
     return int(cross_up.sum()), int((cross_up & regime).sum()), int((cross_up & regime & vol_ok).sum())
 
 
+def funnel_donchian(symbol: str, timeframe: str, window: tuple, cls) -> tuple[int, int]:
+    from strategies.donchian_v1 import BARS_PER_DAY
+
+    df = load_candles(symbol, timeframe, start=window[0], end=window[1])
+    close, high = df["Close"].to_numpy(), df["High"].to_numpy()
+    channel = prior_high(high, cls.entry_days * BARS_PER_DAY)
+    regime = close > sma(close, cls.regime_days * BARS_PER_DAY)
+
+    breakout = close > channel  # NaN warmup compares False
+    return int(breakout.sum()), int((breakout & regime).sum())
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--strategy", choices=["ma_cross_v1", "ma_cross_v1_4h"],
-                    default="ma_cross_v1_4h")
+    ap.add_argument("--strategy", choices=["ma_cross_v1", "ma_cross_v1_4h", "donchian_v1"],
+                    default="donchian_v1")
     args = ap.parse_args()
 
     cls = get_strategy(args.strategy)
     timeframe = STRATEGY_TIMEFRAME[args.strategy]
 
+    if args.strategy == "donchian_v1":
+        desc = (f"entry channel {cls.entry_days}d, regime SMA {cls.regime_days}d "
+                f"(day-anchored, bars = days x 6)")
+        header = "| Symbol | Window | breakout bars (close > prior 20d high) | + regime filter (= entry bars) |"
+        sep = "|--------|--------|------------------------------------------|--------------------------------|"
+    else:
+        desc = (f"fast/slow {cls.fast_n}/{cls.slow_n}, regime SMA({cls.regime_n}), "
+                f"volume SMA({cls.vol_n})")
+        header = "| Symbol | Window | raw cross-ups | + regime filter | + volume gate (= entries) |"
+        sep = "|--------|--------|---------------|-----------------|---------------------------|"
+
     lines = [
         f"# Entry funnel - {args.strategy} ({timeframe} candles)",
         "",
-        f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}  |  "
-        f"fast/slow {cls.fast_n}/{cls.slow_n}, regime SMA({cls.regime_n}), "
-        f"volume SMA({cls.vol_n})",
+        f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}  |  {desc}",
         "",
-        "| Symbol | Window | raw cross-ups | + regime filter | + volume gate (= entries) |",
-        "|--------|--------|---------------|-----------------|---------------------------|",
+        header,
+        sep,
     ]
     for symbol in SYMBOLS:
         for wname, wdates in WINDOWS.items():
-            raw, after_regime, after_vol = funnel(
-                symbol, timeframe, wdates, cls.fast_n, cls.slow_n, cls.regime_n, cls.vol_n
-            )
-            lines.append(f"| {symbol} | {wname} | {raw} | {after_regime} | {after_vol} |")
+            if args.strategy == "donchian_v1":
+                raw, after_regime = funnel_donchian(symbol, timeframe, wdates, cls)
+                lines.append(f"| {symbol} | {wname} | {raw} | {after_regime} |")
+            else:
+                raw, after_regime, after_vol = funnel_ma(symbol, timeframe, wdates, cls)
+                lines.append(f"| {symbol} | {wname} | {raw} | {after_regime} | {after_vol} |")
 
     lines += [
         "",
