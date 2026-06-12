@@ -2,8 +2,10 @@
 
 ma_cross family: raw fast/slow cross-ups -> + regime filter -> + volume gate.
 donchian_v1:     breakout bars (close > prior 20-day high) -> + regime filter.
+tsmom_v1:        signal census - momentum sign-flips (= entry events) and
+                 % of bars with positive momentum (no regime gate by design).
 
-    python backtest/funnel.py --strategy donchian_v1
+    python backtest/funnel.py --strategy tsmom_v1
 """
 
 import argparse
@@ -17,7 +19,7 @@ sys.path.insert(0, str(REPO_ROOT))
 import numpy as np
 
 from backtest.config import SYMBOLS, TRAIN, VALIDATION
-from backtest.indicators import prior_high, sma
+from backtest.indicators import momentum, prior_high, sma
 from backtest.loader import load_candles
 from backtest.run import REPORT_DIR, STRATEGY_TIMEFRAME, get_strategy
 
@@ -53,16 +55,38 @@ def funnel_donchian(symbol: str, timeframe: str, window: tuple, cls) -> tuple[in
     return int(breakout.sum()), int((breakout & regime).sum())
 
 
+def census_tsmom(symbol: str, timeframe: str, window: tuple, cls) -> tuple[int, float]:
+    from strategies.tsmom_v1 import BARS_PER_DAY
+
+    df = load_candles(symbol, timeframe, start=window[0], end=window[1])
+    mom = momentum(df["Close"].to_numpy(), cls.lookback_days * BARS_PER_DAY)
+
+    pos = mom > 0  # NaN warmup compares False
+    prev = np.roll(pos, 1)
+    prev[0] = False
+    flips_up = pos & ~prev  # <=0 -> >0 transitions = entry events
+
+    valid = ~np.isnan(mom)
+    pct_long = 100.0 * pos.sum() / max(valid.sum(), 1)
+    return int(flips_up.sum()), pct_long
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--strategy", choices=["ma_cross_v1", "ma_cross_v1_4h", "donchian_v1"],
+    ap.add_argument("--strategy",
+                    choices=["ma_cross_v1", "ma_cross_v1_4h", "donchian_v1", "tsmom_v1"],
                     default="donchian_v1")
     args = ap.parse_args()
 
     cls = get_strategy(args.strategy)
     timeframe = STRATEGY_TIMEFRAME[args.strategy]
 
-    if args.strategy == "donchian_v1":
+    if args.strategy == "tsmom_v1":
+        desc = (f"momentum lookback {cls.lookback_days}d "
+                f"(day-anchored, bars = days x 6); no regime gate by design")
+        header = "| Symbol | Window | sign-flips to positive (= entry events) | % of bars long |"
+        sep = "|--------|--------|------------------------------------------|----------------|"
+    elif args.strategy == "donchian_v1":
         desc = (f"entry channel {cls.entry_days}d, regime SMA {cls.regime_days}d "
                 f"(day-anchored, bars = days x 6)")
         header = "| Symbol | Window | breakout bars (close > prior 20d high) | + regime filter (= entry bars) |"
@@ -83,7 +107,10 @@ def main() -> None:
     ]
     for symbol in SYMBOLS:
         for wname, wdates in WINDOWS.items():
-            if args.strategy == "donchian_v1":
+            if args.strategy == "tsmom_v1":
+                flips, pct_long = census_tsmom(symbol, timeframe, wdates, cls)
+                lines.append(f"| {symbol} | {wname} | {flips} | {pct_long:.1f}% |")
+            elif args.strategy == "donchian_v1":
                 raw, after_regime = funnel_donchian(symbol, timeframe, wdates, cls)
                 lines.append(f"| {symbol} | {wname} | {raw} | {after_regime} |")
             else:

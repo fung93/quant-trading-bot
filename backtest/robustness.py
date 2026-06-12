@@ -24,12 +24,16 @@ from backtest.run import REPORT_DIR, run_backtest
 
 MA_GRID = [(10, 50), (20, 50), (20, 100), (50, 200)]
 DONCHIAN_ENTRY_GRID = [10, 20, 55]  # days; exit = round(entry / 2)
+TSMOM_LOOKBACK_GRID = [14, 30, 90]  # days
 ATR_GRID = [1.5, 2.0, 3.0]
-GRID_STRATEGIES = ["ma_cross_v1", "ma_cross_v1_4h", "donchian_v1"]
+GRID_STRATEGIES = ["ma_cross_v1", "ma_cross_v1_4h", "donchian_v1", "tsmom_v1"]
 
 
 def grid_cells(strategy: str) -> tuple[str, list[tuple[str, dict]]]:
     """(combo-column header, [(combo label, params), ...]) for one strategy."""
+    if strategy == "tsmom_v1":
+        cells = [(f"{lb}d", {"lookback_days": lb}) for lb in TSMOM_LOOKBACK_GRID]
+        return "lookback", cells
     if strategy == "donchian_v1":
         cells = [
             (f"{entry}d/{round(entry / 2)}d", {"entry_days": entry, "exit_days": round(entry / 2)})

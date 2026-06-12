@@ -42,6 +42,7 @@ STRATEGIES = {
     "rsi_revert_v1": ("strategies.rsi_revert_v1", "RsiRevertV1"),
     "ma_cross_v1_4h": ("strategies.ma_cross_v1_4h", "MaCrossV1_4h"),
     "donchian_v1": ("strategies.donchian_v1", "DonchianV1"),
+    "tsmom_v1": ("strategies.tsmom_v1", "TsmomV1"),
 }
 WINDOWS = {"train": TRAIN, "validation": VALIDATION, "full": (None, None)}
 
@@ -51,6 +52,7 @@ STRATEGY_TIMEFRAME = {
     "rsi_revert_v1": "1d",
     "ma_cross_v1_4h": "4h",
     "donchian_v1": "4h",
+    "tsmom_v1": "4h",
 }
 
 PARAM_NAMES = {
@@ -58,6 +60,7 @@ PARAM_NAMES = {
     "rsi_revert_v1": ["rsi_n", "entry_th", "exit_th", "regime_n", "atr_mult", "atr_n", "risk_pct"],
     "ma_cross_v1_4h": ["fast_n", "slow_n", "regime_n", "atr_mult", "vol_n", "atr_n", "risk_pct"],
     "donchian_v1": ["entry_days", "exit_days", "regime_days", "atr_mult", "atr_n", "risk_pct"],
+    "tsmom_v1": ["lookback_days", "atr_mult", "atr_n", "risk_pct"],
 }
 
 

@@ -23,6 +23,13 @@ def rsi(values, n: int = 14) -> np.ndarray:
     return out.to_numpy()
 
 
+def momentum(values, n: int) -> np.ndarray:
+    """n-bar momentum: current value vs the value n bars ago, as a return
+    (close[t] / close[t-n] - 1). NaN during the first n bars."""
+    s = pd.Series(np.asarray(values, dtype=float))
+    return (s / s.shift(n) - 1).to_numpy()
+
+
 def prior_high(values, n: int) -> np.ndarray:
     """Highest value of the PRECEDING n bars. The .shift(1) excludes the
     current bar - without it a breakout close could compare against its own

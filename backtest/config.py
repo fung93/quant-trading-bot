@@ -3,9 +3,17 @@
 Change venue assumptions here and nowhere else.
 """
 
-# Spot assumption: 0.1% fee + 0.1% slippage per side = 0.4% round trip.
-FEE_PER_SIDE = 0.001
-SLIPPAGE_PER_SIDE = 0.001
+# Fee model revision (2026-06-12) - measurement-driven, not tuned:
+#   Previous: 0.001 fee + 0.001 slippage per side = 0.4% round trip,
+#   a-priori spot assumption from BUILD_PLAN, used in Phases 1, 1b, 1c.
+#   Measured: execution venue decided (Sushi spot on Katana, V3 0.05%
+#   fee-tier pools); live round-trip quotes on 2026-06-12 at $1,000 size:
+#   USDC<->WETH 0.152% RT, USDC<->WBTC 0.146% RT; gas negligible.
+#   Adopted: 0.10% per side (0.20% RT) - measured ~0.15% plus a safety
+#   margin for liquidity thinning. Pre-commitment: a WORSE measurement
+#   would equally have been adopted. Audit trail: EXPERIMENT_LEDGER.md.
+FEE_PER_SIDE = 0.0005
+SLIPPAGE_PER_SIDE = 0.0005
 
 # backtesting.py's `commission` is charged on every fill (entry and exit),
 # so per-side fee + slippage map directly onto it.
