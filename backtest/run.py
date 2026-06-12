@@ -40,12 +40,21 @@ REPORT_DIR = Path(__file__).resolve().parent / "reports"
 STRATEGIES = {
     "ma_cross_v1": ("strategies.ma_cross_v1", "MaCrossV1"),
     "rsi_revert_v1": ("strategies.rsi_revert_v1", "RsiRevertV1"),
+    "ma_cross_v1_4h": ("strategies.ma_cross_v1_4h", "MaCrossV1_4h"),
 }
 WINDOWS = {"train": TRAIN, "validation": VALIDATION, "full": (None, None)}
+
+# Decision timeframe per strategy version (Phase 1b: 4h experiment).
+STRATEGY_TIMEFRAME = {
+    "ma_cross_v1": "1d",
+    "rsi_revert_v1": "1d",
+    "ma_cross_v1_4h": "4h",
+}
 
 PARAM_NAMES = {
     "ma_cross_v1": ["fast_n", "slow_n", "regime_n", "atr_mult", "vol_n", "atr_n", "risk_pct"],
     "rsi_revert_v1": ["rsi_n", "entry_th", "exit_th", "regime_n", "atr_mult", "atr_n", "risk_pct"],
+    "ma_cross_v1_4h": ["fast_n", "slow_n", "regime_n", "atr_mult", "vol_n", "atr_n", "risk_pct"],
 }
 
 
@@ -64,7 +73,8 @@ def run_backtest(
 ) -> dict:
     """Run one backtest and return a metrics dict (shared with robustness.py)."""
     start, end = WINDOWS[window]
-    df = load_candles(symbol, "1d", start=start, end=end)
+    timeframe = STRATEGY_TIMEFRAME[strategy]
+    df = load_candles(symbol, timeframe, start=start, end=end)
     cls = get_strategy(strategy)
 
     bt = Backtest(df, cls, cash=CASH, commission=commission, finalize_trades=True)
@@ -145,7 +155,7 @@ def format_report(r: dict) -> str:
         "_Entries fill at the next candle's open; signals use closed candles only "
         "(no lookahead). Stops anchored to the signal close. Sizing: stop-out loses "
         "1% of equity, capped at 99% (spot, no leverage). Whole-unit sizing is "
-        "negligible at cash=1e8. First ~200 bars of each window are indicator warmup._",
+        "negligible at cash=1e8. The window's first regime_n bars are indicator warmup._",
         "",
     ]
     return "\n".join(lines)

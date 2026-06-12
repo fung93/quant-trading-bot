@@ -1,4 +1,4 @@
-"""Robustness grid for ma_cross_v1 (Phase 1 Task 6 - anti-overfitting).
+"""Robustness grid for the ma_cross family (anti-overfitting check).
 
 TRAINING window only. Runs a small parameter grid and prints expectancy per
 combination. Purpose: see whether results are stable across a *range* of
@@ -6,9 +6,11 @@ parameters or a spike at one magic combination (an overfitting warning, not
 a discovery). Deliberately does NOT auto-select a winner - the table is for
 human judgment.
 
-    python backtest/robustness.py
+    python backtest/robustness.py                              # ma_cross_v1 (1d)
+    python backtest/robustness.py --strategy ma_cross_v1_4h    # Phase 1b (4h)
 """
 
+import argparse
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,11 +23,17 @@ from backtest.run import REPORT_DIR, run_backtest
 
 MA_GRID = [(10, 50), (20, 50), (20, 100), (50, 200)]
 ATR_GRID = [1.5, 2.0, 3.0]
+GRID_STRATEGIES = ["ma_cross_v1", "ma_cross_v1_4h"]
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--strategy", choices=GRID_STRATEGIES, default="ma_cross_v1")
+    args = ap.parse_args()
+    strategy = args.strategy
+
     lines = [
-        "# Robustness grid - ma_cross_v1 - TRAINING window only",
+        f"# Robustness grid - {strategy} - TRAINING window only",
         "",
         f"Window: {TRAIN[0]} -> {TRAIN[1]}  |  Generated: "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
@@ -48,7 +56,7 @@ def main() -> None:
         for fast, slow in MA_GRID:
             for atr_mult in ATR_GRID:
                 r = run_backtest(
-                    "ma_cross_v1",
+                    strategy,
                     symbol,
                     "train",
                     params={"fast_n": fast, "slow_n": slow, "atr_mult": atr_mult},
@@ -84,8 +92,8 @@ def main() -> None:
     out = "\n".join(lines)
     print(out)
     REPORT_DIR.mkdir(exist_ok=True)
-    (REPORT_DIR / "robustness_ma_cross_v1.md").write_text(out, encoding="utf-8")
-    print("saved: backtest/reports/robustness_ma_cross_v1.md")
+    (REPORT_DIR / f"robustness_{strategy}.md").write_text(out, encoding="utf-8")
+    print(f"saved: backtest/reports/robustness_{strategy}.md")
 
 
 if __name__ == "__main__":

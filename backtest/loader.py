@@ -84,6 +84,38 @@ def _validate(df: pd.DataFrame, label: str) -> None:
         raise ValueError(f"{label}: NaN values present")
 
 
+def _load_full(symbol: str, timeframe: str, refresh: bool) -> pd.DataFrame:
+    """Full stored history for a timeframe that exists in the DB (1h/1d),
+    parquet-cached."""
+    cache = DATA_DIR / f"{symbol}_{timeframe}.parquet"
+    if cache.exists() and not refresh:
+        return pd.read_parquet(cache)
+    df = _fetch_all(symbol, timeframe)
+    DATA_DIR.mkdir(exist_ok=True)
+    df.to_parquet(cache)
+    return df
+
+
+def _resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
+    """1h -> 4h, anchored to UTC midnight (00/04/08/...), matching Binance's
+    own 4h alignment. Interior bins missing an hour (rare exchange outages)
+    are kept — Binance's native 4h candles aggregate the same partial data —
+    but a still-forming final bin is dropped: closed candles only, always.
+    """
+    agg = df_1h.resample("4h").agg(
+        Open=("Open", "first"),
+        High=("High", "max"),
+        Low=("Low", "min"),
+        Close=("Close", "last"),
+        Volume=("Volume", "sum"),
+    )
+    counts = df_1h["Close"].resample("4h").count()
+    agg = agg[counts.reindex(agg.index, fill_value=0) > 0]
+    if len(agg) and counts.loc[agg.index[-1]] < 4:
+        agg = agg.iloc[:-1]
+    return agg
+
+
 def load_candles(
     symbol: str,
     timeframe: str = "1d",
@@ -92,15 +124,12 @@ def load_candles(
     refresh: bool = False,
 ) -> pd.DataFrame:
     """OHLCV DataFrame for [start, end] (inclusive), columns capitalized
-    as backtesting.py requires. start/end are ISO dates; None = unbounded."""
-    cache = DATA_DIR / f"{symbol}_{timeframe}.parquet"
-
-    if cache.exists() and not refresh:
-        df = pd.read_parquet(cache)
+    as backtesting.py requires. start/end are ISO dates; None = unbounded.
+    '4h' is resampled from stored 1h candles (the DB stores 1h and 1d)."""
+    if timeframe == "4h":
+        df = _resample_4h(_load_full(symbol, "1h", refresh))
     else:
-        df = _fetch_all(symbol, timeframe)
-        DATA_DIR.mkdir(exist_ok=True)
-        df.to_parquet(cache)
+        df = _load_full(symbol, timeframe, refresh)
 
     _validate(df, f"{symbol} {timeframe}")
 
