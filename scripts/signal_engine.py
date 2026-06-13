@@ -37,6 +37,21 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from candle_lib import get_supabase  # scripts/ sibling
 
+# The strategy file imports `backtesting` (the lab framework), which is
+# deliberately NOT installed on the signal cron - it would drag bokeh etc.
+# into a 6x/day job. The engine only reads the class's parameter attributes,
+# so when the package is absent we register a minimal stand-in whose
+# Strategy is a plain object. Parameters still come from the immutable
+# strategy file - no values are re-typed here.
+try:
+    import backtesting  # noqa: F401
+except ModuleNotFoundError:
+    import types
+
+    _stub = types.ModuleType("backtesting")
+    _stub.Strategy = object
+    sys.modules["backtesting"] = _stub
+
 from backtest.indicators import atr, momentum
 from backtest.loader import fetch_recent_4h
 from config.paper_account import (
