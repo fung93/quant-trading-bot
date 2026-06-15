@@ -2,11 +2,13 @@ name: signal-engine
 
 on:
   schedule:
-    # 9 min past each 4h boundary. The job runs sync as its own first step
-    # (the "combine" option): candles are always fresh before signals, with
-    # no cross-workflow ordering to break. The hourly sync workflow still
-    # covers the other hours; double-syncing is harmless (idempotent).
-    - cron: "9 0,4,8,12,16,20 * * *"
+    # Two attempts (9 and 39 past) at each 4h boundary - GitHub throttles
+    # scheduled runs on private repos, so a single slot can be skipped for
+    # hours (observed 2026-06-15, ~5h gap). The second shot catches most
+    # skips; idempotency makes a double-fire harmless. Each run syncs first,
+    # so the critical decision moments stay fresh even if the hourly sync
+    # workflow is skipping. This is the HARDENED critical path.
+    - cron: "9,39 0,4,8,12,16,20 * * *"
   workflow_dispatch:
 
 concurrency:

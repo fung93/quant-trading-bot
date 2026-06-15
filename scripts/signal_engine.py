@@ -408,8 +408,15 @@ def process_symbol(client, symbol: str, equity: float, kill_active: bool) -> Non
 
 
 def heartbeat(client, equity: float, kill_active: bool) -> None:
-    """Daily 08:00 MYT (00:xx UTC run): silence means no-signal, not breakage."""
-    if datetime.now(timezone.utc).hour != 0:
+    """One heartbeat per UTC day, sent by the FIRST engine run that fires
+    that day. Normally that's the 00:xx UTC slot (~08:09 MYT); if GitHub
+    skips it, the next slot to fire carries it instead. Skip-proof: as long
+    as ANY run fires that day you get one 'engine alive' message, so silence
+    for a whole day means the engine genuinely did not run (not just a
+    skipped morning slot). Only marks the day done on a successful send, so
+    a Telegram failure retries on the next run."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if get_state(client, "last_heartbeat_date", {"date": None}).get("date") == today:
         return
     peak = float(get_state(client, "equity_peak", {"peak": INITIAL_CAPITAL_USD})["peak"])
     dd = (peak - equity) / peak * 100 if peak > 0 else 0.0
@@ -418,12 +425,14 @@ def heartbeat(client, equity: float, kill_active: bool) -> None:
         f"open ETH position: entry {pos['entry_actual']}, stop {pos['stop_loss']}"
         if pos else "no open ETH position"
     )
-    tg_send(
+    sent = tg_send(
         f"Heartbeat - engine alive\n"
         f"Paper equity: ${equity:.2f} (~RM{equity * MYR_PER_USD:.0f}) | peak ${peak:.2f} "
         f"| drawdown {dd:.1f}% (kill at {KILL_SWITCH_DD * 100:.0f}%)\n"
         f"{pos_txt}\nKill switch: {'ACTIVE' if kill_active else 'off'}"
     )
+    if sent:
+        set_state(client, "last_heartbeat_date", {"date": today})
 
 
 def main() -> None:

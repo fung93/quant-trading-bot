@@ -2,11 +2,12 @@ name: sync-candles
 
 on:
   schedule:
-    # Two slots per hour: GitHub drops scheduled runs under load (observed
-    # 2026-06-11, three consecutive skips). The sync window self-heals, so
-    # whichever slot fires catches everything up; the idempotent upsert
-    # makes the extra run free.
-    - cron: "7,37 * * * *"
+    # Hourly (was 7,37). This workflow only keeps the DASHBOARD fresh - the
+    # non-critical path - so its minutes were halved to stay under the
+    # 2000-min/month private-repo ceiling and free budget for the hardened
+    # signal-engine. Signal evaluation never depends on this job: the engine
+    # workflow syncs first on its own. Self-healing covers any skipped hour.
+    - cron: "7 * * * *"
   workflow_dispatch:
 
 # Overlapping runs cancel the older one rather than stacking.
