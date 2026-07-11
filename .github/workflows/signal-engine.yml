@@ -2,13 +2,13 @@ name: signal-engine
 
 on:
   schedule:
-    # Two attempts (9 and 39 past) at each 4h boundary - GitHub throttles
-    # scheduled runs on private repos, so a single slot can be skipped for
-    # hours (observed 2026-06-15, ~5h gap). The second shot catches most
-    # skips; idempotency makes a double-fire harmless. Each run syncs first,
-    # so the critical decision moments stay fresh even if the hourly sync
-    # workflow is skipping. This is the HARDENED critical path.
-    - cron: "9,39 0,4,8,12,16,20 * * *"
+    # FALLBACK ONLY (since 2026-07-11): the primary trigger is cron-job.org
+    # hitting workflow_dispatch at :02 past each 4h boundary - dispatched
+    # runs start in seconds and are not subject to the scheduled-run
+    # throttling that delayed signals by a median ~2h. This :39 slot is the
+    # backup if the external trigger ever fails; idempotency + the engine's
+    # catch-up scan make double-fires and gaps harmless.
+    - cron: "39 0,4,8,12,16,20 * * *"
   workflow_dispatch:
 
 concurrency:
