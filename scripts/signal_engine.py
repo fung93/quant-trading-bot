@@ -161,6 +161,39 @@ def size_position(equity: float, price: float, atr_value: float) -> dict | None:
     return {"stop": stop, "risk_usd": risk_usd, "units": units, "size_usd": size_usd}
 
 
+def find_live_cross(mom, start_idx: int) -> int | None:
+    """Catch-up cross detection (GitHub skips/delays scheduled runs, so the
+    newest bar is not always the bar a cross happened on).
+
+    Walk back from the newest bar over the un-evaluated range [start_idx..n):
+    if momentum at any bar on the way is <= 0 (or NaN), the most recent cross
+    already died inside the gap - the strategy would be flat now, so no entry
+    (the moment truly passed; we do not trade the past). If bar i is the
+    transition mom[i-1] <= 0 < mom[i] and every bar from i to the newest
+    stayed positive, that cross is still LIVE: the strategy would be long
+    right now, so a (possibly late) entry signal is faithful to it.
+    """
+    n = len(mom)
+    for i in range(n - 1, max(start_idx, 1) - 1, -1):
+        if not mom[i] > 0:  # NaN-safe: NaN or <= 0 kills the cross
+            return None
+        if mom[i - 1] <= 0:
+            return i
+    return None
+
+
+def get_last_evaluated(client, symbol: str):
+    """Newest bar a previous run evaluated for this symbol, or None."""
+    import pandas as pd
+
+    v = get_state(client, f"last_evaluated_bar_{symbol}", {"bar": None})
+    return pd.Timestamp(v["bar"]).tz_localize(None) if v.get("bar") else None
+
+
+def set_last_evaluated(client, symbol: str, bar) -> None:
+    set_state(client, f"last_evaluated_bar_{symbol}", {"bar": bar.isoformat()})
+
+
 # ------------------------------------------------------------- DB accessors
 
 def open_trade(client, symbol: str):
@@ -309,73 +342,126 @@ def fill_observational(client, df) -> None:
 # ------------------------------------------------------------ symbol logic
 
 def process_symbol(client, symbol: str, equity: float, kill_active: bool) -> None:
+    import pandas as pd
+
     df = fetch_recent_4h(symbol, HISTORY_DAYS)
     close = df["Close"].to_numpy()
-    if len(close) < LOOKBACK_N + 2:
-        raise RuntimeError(f"{symbol}: only {len(close)} 4h bars, need {LOOKBACK_N + 2}")
+    n = len(close)
+    if n < LOOKBACK_N + 2:
+        raise RuntimeError(f"{symbol}: only {n} 4h bars, need {LOOKBACK_N + 2}")
 
     if symbol == OBSERVATIONAL:
         fill_observational(client, df)
 
     mom = momentum(close, LOOKBACK_N)
     atr_arr = atr(df["High"].to_numpy(), df["Low"].to_numpy(), close, ATR_N)
-    last = df.iloc[-1]
-    bar_time = df.index[-1]
-    price = float(last["Close"])
+    newest_bar = df.index[-1]
     label = "observational" if symbol == OBSERVATIONAL else "primary"
+
+    # Catch-up window: first positional index not yet evaluated by any run.
+    # First run after deploy (no marker): evaluate only the newest bar, as
+    # before - do not dredge months of history.
+    last_eval = get_last_evaluated(client, symbol)
+    if last_eval is None:
+        start_idx = n - 1
+    else:
+        after = df.index.searchsorted(last_eval, side="right")
+        start_idx = min(max(int(after), 1), n - 1)
+    skipped = (n - 1) - start_idx  # bars no run ever looked at
 
     trade = open_trade(client, symbol)
 
     if trade:
         stop = float(trade["stop_loss"])
-        stop_hit = float(last["Low"]) <= stop
-        mom_flip = mom[-1] <= 0
-        if (stop_hit or mom_flip) and not pending_exit_exists(client, trade["id"]):
-            reason = "stop hit" if stop_hit else "momentum flipped negative"
+        opened = pd.Timestamp(trade["opened_at"])
+        if opened.tzinfo is not None:
+            opened = opened.tz_convert("UTC").tz_localize(None)
+        # Stop-breach scan across every un-evaluated bar (a skipped run must
+        # not skip a stop). Only bars that CLOSED after the trade opened.
+        scan = df.iloc[start_idx:]
+        scan = scan[scan.index + pd.Timedelta(hours=4) > opened]
+        breach = scan[scan["Low"] <= stop]
+        stop_hit_bar = breach.index[0] if len(breach) else None
+        mom_flip = mom[-1] <= 0  # state-based: any late run still sees it
+
+        if (stop_hit_bar is not None or mom_flip) and not pending_exit_exists(client, trade["id"]):
+            if stop_hit_bar is not None:
+                reason = "stop hit"
+                sig_bar = stop_hit_bar
+                ref_price = float(df.loc[stop_hit_bar, "Close"])
+                late_note = (
+                    f" (breach detected late - occurred on the {myt(stop_hit_bar)} bar; runs were skipped)"
+                    if stop_hit_bar != newest_bar else ""
+                )
+            else:
+                reason = "momentum flipped negative"
+                sig_bar = newest_bar
+                ref_price = float(close[-1])
+                late_note = ""
             reasoning = (
-                f"EXIT {symbol} ({label}): {reason} on the {myt(bar_time)} 4h close. "
-                f"Reference price {price:.2f}, stop was {stop:.2f}. "
+                f"EXIT {symbol} ({label}): {reason} on the {myt(sig_bar)} 4h close{late_note}. "
+                f"Reference price {ref_price:.2f}, stop was {stop:.2f}. "
                 + ("Log your actual exit on the dashboard." if symbol == PRIMARY
                    else "Observational - engine will auto-fill at next bar open.")
             )
             new = upsert_signal(client, {
                 "symbol": symbol, "strategy": STRATEGY_ID, "direction": "flat",
-                "signal_type": "exit", "bar_open_time": bar_time.isoformat(),
-                "entry_price": price, "stop_loss": stop,
+                "signal_type": "exit", "bar_open_time": sig_bar.isoformat(),
+                "entry_price": ref_price, "stop_loss": stop,
                 "reasoning": reasoning, "trade_id": trade["id"],
                 "backtest_stats": BACKTEST_STATS[symbol], "status": "pending",
             })
             if new:
                 sent = tg_send(
-                    (f"EXIT signal - {symbol}\nReason: {reason}\nReference: {price:.2f}\n"
+                    (f"EXIT signal - {symbol}\nReason: {reason}{late_note}\nReference: {ref_price:.2f}\n"
                      f"Log your exit on the dashboard.") if symbol == PRIMARY
-                    else f"[observational] BTC exit ({reason}) at ref {price:.2f}. No action needed."
+                    else f"[observational] BTC exit ({reason}) at ref {ref_price:.2f}. No action needed."
                 )
                 if sent:
                     client.table("signals").update({"telegram_sent": True}).eq("id", new["id"]).execute()
-                print(f"[{symbol}] exit signal written ({reason})", flush=True)
+                print(f"[{symbol}] exit signal written ({reason}){late_note}", flush=True)
+        set_last_evaluated(client, symbol, newest_bar)
         return
 
-    # No open position: entry check (mirrors TsmomV1.next()).
-    if not entry_cross(mom):
-        print(f"[{symbol}] no signal at {bar_time} (mom {mom[-1]:+.4f})", flush=True)
+    # No open position: find a still-live cross anywhere in the un-evaluated
+    # range (mirrors TsmomV1.next(), made skip-proof).
+    cross_idx = find_live_cross(mom, start_idx)
+    if cross_idx is None:
+        print(f"[{symbol}] no signal at {newest_bar} (mom {mom[-1]:+.4f}, {skipped} caught-up bars)", flush=True)
+        set_last_evaluated(client, symbol, newest_bar)
         return
     if kill_active:
         print(f"[{symbol}] entry suppressed by kill switch", flush=True)
         tg_send(f"Entry signal on {symbol} SUPPRESSED - kill switch active.")
+        set_last_evaluated(client, symbol, newest_bar)
         return
 
-    sizing = size_position(equity, price, float(atr_arr[-1]))
+    # Anchor the signal to the CROSS bar (faithful to what the strategy saw;
+    # also makes the dedupe key stable however late we detect it).
+    bar_time = df.index[cross_idx]
+    price = float(close[cross_idx])
+    bars_late = (n - 1) - cross_idx
+    late_note = ""
+    if bars_late:
+        faithful_fill = float(df.iloc[cross_idx + 1]["Open"])
+        late_note = (
+            f" DETECTED {bars_late} bar(s) LATE (runs were skipped): the faithful next-bar-open "
+            f"fill was {faithful_fill:.2f}; current price is {close[-1]:.2f} - log at an "
+            f"achievable price, the record keeps both."
+        )
+
+    sizing = size_position(equity, price, float(atr_arr[cross_idx]))
     if sizing is None:
+        set_last_evaluated(client, symbol, newest_bar)
         return
     stop, risk_usd = sizing["stop"], sizing["risk_usd"]
     units, size_usd = sizing["units"], sizing["size_usd"]
-    a = float(atr_arr[-1])
+    a = float(atr_arr[cross_idx])
 
     stats = BACKTEST_STATS[symbol]
     reasoning = (
         f"ENTRY {symbol} long ({label}): 30-day momentum crossed positive at the "
-        f"{myt(bar_time)} 4h close ({mom[-1] * 100:+.2f}% vs 30 days ago). "
+        f"{myt(bar_time)} 4h close ({mom[cross_idx] * 100:+.2f}% vs 30 days ago). "
         f"Reference entry {price:.2f}; stop {stop:.2f} (2x ATR14 = {ATR_MULT * a:.2f}); "
         f"size {units:.6f} {symbol[:-4]} = ${size_usd:.2f} "
         f"(~RM{size_usd * MYR_PER_USD:.0f} display) risking ${risk_usd:.2f} "
@@ -383,7 +469,7 @@ def process_symbol(client, symbol: str, equity: float, kill_active: bool) -> Non
         f"Backtest context ({stats['window']}, {stats['trades']} trades): "
         f"{stats['expectancy_pct_after_fees']:+.2f}%/trade after fees, "
         f"{stats['win_rate_pct']:.0f}% win rate, avg win {stats['avg_win_pct']:+.1f}% "
-        f"vs avg loss {stats['avg_loss_pct']:+.1f}%."
+        f"vs avg loss {stats['avg_loss_pct']:+.1f}%." + late_note
     )
     new = upsert_signal(client, {
         "symbol": symbol, "strategy": STRATEGY_ID, "direction": "long",
@@ -404,7 +490,9 @@ def process_symbol(client, symbol: str, equity: float, kill_active: bool) -> Non
         )
         if sent:
             client.table("signals").update({"telegram_sent": True}).eq("id", new["id"]).execute()
-        print(f"[{symbol}] entry signal written at {price}", flush=True)
+        print(f"[{symbol}] entry signal written at {price}"
+              + (f" ({bars_late} bars late)" if bars_late else ""), flush=True)
+    set_last_evaluated(client, symbol, newest_bar)
 
 
 def heartbeat(client, equity: float, kill_active: bool) -> None:
