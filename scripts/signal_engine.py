@@ -190,6 +190,34 @@ def get_last_evaluated(client, symbol: str):
     return pd.Timestamp(v["bar"]).tz_localize(None) if v.get("bar") else None
 
 
+def last_exit_bar(client, symbol: str):
+    """Bar of the most recent COMPLETED exit for this symbol, or None.
+
+    While a position is open the engine evaluates exits only - it never looks
+    for entry crosses. So if an exit signal sits unlogged for a while (ETH is
+    filled by hand), any entry cross in that window was never scanned, and the
+    plain last-evaluated marker has already drifted past it. Entry scanning
+    must therefore resume from the EXIT bar, not from the marker. Observed
+    2026-08-16: two ETH crosses missed across a 2-day logging delay.
+    """
+    import pandas as pd
+
+    res = (
+        client.table("signals")
+        .select("bar_open_time")
+        .eq("strategy", STRATEGY_ID)
+        .eq("symbol", symbol)
+        .eq("signal_type", "exit")
+        .eq("status", "filled")
+        .order("bar_open_time", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    return pd.Timestamp(res.data[0]["bar_open_time"]).tz_localize(None)
+
+
 def set_last_evaluated(client, symbol: str, bar) -> None:
     set_state(client, f"last_evaluated_bar_{symbol}", {"bar": bar.isoformat()})
 
@@ -423,8 +451,20 @@ def process_symbol(client, symbol: str, equity: float, kill_active: bool) -> Non
         set_last_evaluated(client, symbol, newest_bar)
         return
 
-    # No open position: find a still-live cross anywhere in the un-evaluated
-    # range (mirrors TsmomV1.next(), made skip-proof).
+    # No open position. Entry scanning resumes from the most recent exit bar:
+    # while the position was open (possibly long past the exit signal, if the
+    # fill was logged late) no run looked for entries, so the marker cannot be
+    # trusted for this path. Widening to the exit bar is safe by construction -
+    # find_live_cross only returns a transition at index >= start that is STILL
+    # live, so it cannot resurrect a dead cross, cannot re-enter after a
+    # stop-out taken while momentum stayed positive (no transition exists after
+    # that exit), and the dedupe index blocks re-notifying a cross already
+    # signalled.
+    exit_bar = last_exit_bar(client, symbol)
+    if exit_bar is not None:
+        after_exit = int(df.index.searchsorted(exit_bar, side="right"))
+        start_idx = min(start_idx, min(max(after_exit, 1), n - 1))
+
     cross_idx = find_live_cross(mom, start_idx)
     if cross_idx is None:
         print(f"[{symbol}] no signal at {newest_bar} (mom {mom[-1]:+.4f}, {skipped} caught-up bars)", flush=True)
