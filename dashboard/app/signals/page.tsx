@@ -1,4 +1,5 @@
 import EquityCurve from "@/components/EquityCurve";
+import GateTracker from "@/components/GateTracker";
 import {
   KILL_SWITCH_DD,
   MYR_PER_USD,
@@ -9,6 +10,7 @@ import {
   getOpenTrades,
   getPaperEquity,
   getSignals,
+  computeGates,
   netReturn,
   INITIAL_CAPITAL_USD,
 } from "@/lib/paper";
@@ -17,6 +19,7 @@ export const dynamic = "force-dynamic";
 
 export default async function SignalsPage() {
   let signals, openTrades, closedEth, state, equity, ethPrice;
+  let gates: Awaited<ReturnType<typeof computeGates>> = [];
   try {
     [signals, openTrades, closedEth, state, equity, ethPrice] = await Promise.all([
       getSignals(50),
@@ -26,6 +29,7 @@ export default async function SignalsPage() {
       getPaperEquity(),
       getLatestClose("ETHUSDT"),
     ]);
+    gates = await computeGates();
   } catch {
     return (
       <main className="mx-auto w-full max-w-4xl p-4">
@@ -56,6 +60,8 @@ export default async function SignalsPage() {
   return (
     <main className="mx-auto w-full max-w-4xl space-y-4 p-4">
       <h1 className="text-lg font-semibold tracking-tight">Signals & paper book</h1>
+
+      <GateTracker gates={gates} />
 
       {kill && (
         <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-300">

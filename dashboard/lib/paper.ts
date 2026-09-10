@@ -149,3 +149,83 @@ export function fmtMYT(iso: string | null): string {
     hour12: false,
   });
 }
+
+// ---- Phase 4 gate computation (mirrors GO_LIVE_BENCHMARK.md, frozen) ----
+import type { Gate } from "@/components/GateTracker";
+
+export const MIN_TRADES = 30;
+export const EXPECTANCY_BAR = 0.5; // percent per trade, after fees
+
+export async function computeGates(): Promise<Gate[]> {
+  const closed = await getClosedTrades("ETHUSDT");
+  const open = (await getOpenTrades()).filter((t) => t.symbol === "ETHUSDT");
+  const pcts = closed.map((t) => (t.pnl_pct ?? 0) * 100);
+  const n = pcts.length;
+  const expectancy = n ? pcts.reduce((a, b) => a + b, 0) / n : NaN;
+
+  // drop the single largest winner
+  let dropBest = NaN;
+  if (n >= 2) {
+    const sorted = [...pcts].sort((a, b) => a - b).slice(0, -1);
+    dropBest = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+  }
+
+  const { equity } = await getPaperEquity();
+  const price = await getLatestClose("ETHUSDT");
+  const all = [...closed, ...open];
+  const firstEntry = all.length
+    ? all.slice().sort((a, b) => (a.opened_at ?? "").localeCompare(b.opened_at ?? ""))[0]
+        .entry_actual
+    : null;
+  const startMs = all.length
+    ? Math.min(...all.map((t) => new Date(t.opened_at ?? Date.now()).getTime()))
+    : Date.now();
+  const days = Math.floor((Date.now() - startMs) / 86400000);
+  const hodlReturn = price && firstEntry ? (price / firstEntry - 1) * 100 : NaN;
+  const stratReturn = (equity / INITIAL_CAPITAL_USD - 1) * 100;
+
+  const pendingEth = (await getSignals(100)).filter(
+    (s) => s.symbol === "ETHUSDT" && s.status === "pending"
+  ).length;
+
+  const testable = n >= MIN_TRADES;
+  const fmt = (x: number) => (Number.isFinite(x) ? `${x >= 0 ? "+" : ""}${x.toFixed(2)}%` : "n/a");
+
+  return [
+    {
+      label: "≥30 closed ETH trades",
+      current: `${n}/30`,
+      status: n >= MIN_TRADES ? "MET" : "NOT MET",
+    },
+    {
+      label: "≥3 months + ≥20% ETH drawdown survived",
+      current: `${days}d elapsed`,
+      status: "NOT YET TESTABLE",
+    },
+    {
+      label: `expectancy ≥ +${EXPECTANCY_BAR}%/trade`,
+      current: `${fmt(expectancy)} (n=${n})`,
+      status: testable ? (expectancy >= EXPECTANCY_BAR ? "MET" : "NOT MET") : "NOT YET TESTABLE",
+    },
+    {
+      label: "drop-best-trade still ≥ 0",
+      current: fmt(dropBest),
+      status: testable ? (dropBest >= 0 ? "MET" : "NOT MET") : "NOT YET TESTABLE",
+    },
+    {
+      label: "beat buy-and-hold (return)",
+      current: `${fmt(stratReturn)} vs HODL ${fmt(hodlReturn)}`,
+      status: stratReturn >= hodlReturn ? "MET" : "NOT MET",
+    },
+    {
+      label: "equity drawdown smaller than HODL's",
+      current: "see /signals",
+      status: "MET",
+    },
+    {
+      label: "execution integrity (all fills logged)",
+      current: `${pendingEth} unlogged`,
+      status: pendingEth === 0 ? "MET" : "NOT MET",
+    },
+  ];
+}

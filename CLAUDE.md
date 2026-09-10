@@ -2,8 +2,13 @@
 
 Read BUILD_PLAN.md before any work.
 
-- **Current phase: 2 (paper trading live). Strategy: tsmom_v1. No strategy
-  changes permitted outside Phase 3 rules.**
+- **Current phase: 3 (paper trading + weekly review). Strategy: tsmom_v1.
+  Strategy changes only via the Phase 3 revision rules.**
+  Weekly review: scripts/weekly_review.py (Sun 09:00 MYT, weekly-review.yml),
+  output to reviews/. Revisions ONLY via scripts/propose_revision.py, which
+  refuses anything under 30 closed trades, under 30 days since the last
+  revision, any mutation of an existing version, or a thin justification.
+  Gate tracker (7 frozen criteria) in the review and on /signals.
   ETH primary (owner logs fills at /log), BTC observational (auto-filled,
   excluded from equity/kill switch). Engine: scripts/signal_engine.py,
   every 4h via signal-engine.yml (sync runs first in the same job).
