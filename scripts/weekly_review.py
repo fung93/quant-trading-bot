@@ -224,11 +224,20 @@ def build(days=7):
                      f"strategy {strat_ret:+.1f}% vs HODL {hodl['hodl_return']:+.1f}%",
                      "MET" if c5 else "NOT MET"))
         met += c5
-        c6 = dd < abs(hodl["hodl_max_dd"])
-        rows.append(("6. Equity DD materially smaller than HODL's",
-                     f"strategy {dd:.1f}% vs HODL {abs(hodl['hodl_max_dd']):.1f}%",
-                     "MET" if c6 else "NOT MET"))
-        met += c6
+        # Criterion 6 is defined "over that decline" - the >=20% ETH decline of
+        # criterion 2. Until one has occurred it is NOT YET TESTABLE and is never
+        # counted as met (an earlier version wrongly scored it against a -6.5%
+        # wobble, inflating the count).
+        if not dd20:
+            rows.append(("6. Equity DD smaller than HODL's through the >=20% decline",
+                         f"no >=20% decline yet (worst {hodl['eth_price_dd']:.1f}%)",
+                         "NOT YET TESTABLE"))
+        else:
+            c6 = dd < abs(hodl["hodl_max_dd"])
+            rows.append(("6. Equity DD smaller than HODL's through the >=20% decline",
+                         f"strategy {dd:.1f}% vs HODL {abs(hodl['hodl_max_dd']):.1f}%",
+                         "MET" if c6 else "NOT MET"))
+            met += c6
 
     c7 = len(unlogged) == 0
     rows.append(("7. Execution integrity (all fills logged)",

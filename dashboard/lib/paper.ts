@@ -152,6 +152,7 @@ export function fmtMYT(iso: string | null): string {
 
 // ---- Phase 4 gate computation (mirrors GO_LIVE_BENCHMARK.md, frozen) ----
 import type { Gate } from "@/components/GateTracker";
+import { getCandles } from "./data";
 
 export const MIN_TRADES = 30;
 export const EXPECTANCY_BAR = 0.5; // percent per trade, after fees
@@ -184,6 +185,23 @@ export async function computeGates(): Promise<Gate[]> {
   const hodlReturn = price && firstEntry ? (price / firstEntry - 1) * 100 : NaN;
   const stratReturn = (equity / INITIAL_CAPITAL_USD - 1) * 100;
 
+  // HODL max drawdown over the live window, from daily closes.
+  const daily = await getCandles("ETHUSDT", "1d", 400);
+  const inWindow = daily.filter((c) => c.time * 1000 >= startMs).map((c) => c.close);
+  let runMax = -Infinity;
+  let hodlMaxDd = 0; // percent, <= 0
+  for (const px of inWindow) {
+    runMax = Math.max(runMax, px);
+    hodlMaxDd = Math.min(hodlMaxDd, (px / runMax - 1) * 100);
+  }
+  const decline20 = hodlMaxDd <= -20;
+  const state = await getEngineState();
+  const peak = Math.max(
+    Number((state["equity_peak"] as { peak?: number })?.peak ?? INITIAL_CAPITAL_USD),
+    equity
+  );
+  const stratDd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
+
   const pendingEth = (await getSignals(100)).filter(
     (s) => s.symbol === "ETHUSDT" && s.status === "pending"
   ).length;
@@ -199,8 +217,8 @@ export async function computeGates(): Promise<Gate[]> {
     },
     {
       label: "≥3 months + ≥20% ETH drawdown survived",
-      current: `${days}d elapsed`,
-      status: "NOT YET TESTABLE",
+      current: `${days}d elapsed, worst ETH DD ${hodlMaxDd.toFixed(1)}%`,
+      status: days >= 91 && decline20 ? "MET" : decline20 ? "NOT MET" : "NOT YET TESTABLE",
     },
     {
       label: `expectancy ≥ +${EXPECTANCY_BAR}%/trade`,
@@ -218,9 +236,13 @@ export async function computeGates(): Promise<Gate[]> {
       status: stratReturn >= hodlReturn ? "MET" : "NOT MET",
     },
     {
-      label: "equity drawdown smaller than HODL's",
-      current: "see /signals",
-      status: "MET",
+      // Defined "over that decline" (the ≥20% decline of criterion 2).
+      // Never counted as met before one has occurred.
+      label: "equity DD smaller than HODL's through the ≥20% decline",
+      current: decline20
+        ? `strategy ${stratDd.toFixed(1)}% vs HODL ${Math.abs(hodlMaxDd).toFixed(1)}%`
+        : `no ≥20% decline yet (worst ${hodlMaxDd.toFixed(1)}%)`,
+      status: !decline20 ? "NOT YET TESTABLE" : stratDd < Math.abs(hodlMaxDd) ? "MET" : "NOT MET",
     },
     {
       label: "execution integrity (all fills logged)",
