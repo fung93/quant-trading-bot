@@ -176,11 +176,11 @@ def unlogged_eth_signals(signals):
 
 
 def autofilled_eth_signals(signals):
-    """ETH signals the engine's safety net had to fill because they went
-    past the grace window unlogged. The net keeps the book consistent; it
-    does not make the miss go away. These are execution failures and
-    criterion 7 must count them as such - otherwise automating the log
-    would make the criterion pass by construction."""
+    """ETH signals NOT executed by the owner. The engine no longer auto-fills
+    ETH (the 2026-10-09 safety net was reverted the same day), so this should
+    always be empty - it is kept as a tripwire. If an auto-fill is ever
+    reintroduced, criterion 7 must keep failing on it, because a criterion
+    that scores the owner's execution cannot be passed by a machine."""
     return [s for s in signals if s["symbol"] == PRIMARY and s["status"] == "autofilled"]
 
 

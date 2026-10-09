@@ -92,56 +92,49 @@ s_t = size_position(230.0, float(df["Close"].iloc[t]), float(a_t))
 check("sizing valid at the cross bar", s_t is not None and s_t["stop"] > 0,
       f"close {df['Close'].iloc[t]:.2f}, stop {s_t['stop']:.2f}, ${s_t['size_usd']:.2f}")
 
-# 5. Primary fill safety net: grace window, honest fill bar, miss accounting.
+# 5. ETH fills stay MANUAL: the engine reminds, it never fills.
+import inspect  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
-import pandas as pd  # noqa: E402
-
+import signal_engine as ENG  # noqa: E402
 from review_lib import execution_misses  # noqa: E402
-from signal_engine import PRIMARY_GRACE_HOURS  # noqa: E402
 
-check("grace window is 12h", PRIMARY_GRACE_HOURS == 12, f"{PRIMARY_GRACE_HOURS}h")
+check("no ETH auto-fill function exists",
+      not hasattr(ENG, "fill_primary_safety_net"),
+      "ETH fills are the owner's; reverted 2026-10-09")
 
-# A signal younger than the grace window must NOT be filled yet.
+src = inspect.getsource(ENG.nag_primary_unlogged)
+check("nagger never writes to trades", ".table(\"trades\")" not in src,
+      "reminder only - no insert/update of trades")
+check("nagger never marks a signal filled", "autofilled" not in src and
+      '"status": "filled"' not in src, "signal status untouched")
+check("engine auto-fills ONLY the observational symbol",
+      'nag_primary_unlogged(client, df)' in inspect.getsource(ENG.process_symbol)
+      and 'fill_observational(client, df)' in inspect.getsource(ENG.process_symbol))
+
+# Nag only after the owner has had a realistic chance to see the alert.
 now = datetime.now(timezone.utc)
-young = now - timedelta(hours=PRIMARY_GRACE_HOURS - 1)
-old = now - timedelta(hours=PRIMARY_GRACE_HOURS + 9)
-check("fresh signal is inside grace (nag, do not fill)",
-      (now - young).total_seconds() / 3600 < PRIMARY_GRACE_HOURS)
-check("stale signal is past grace (fill it)",
-      (now - old).total_seconds() / 3600 >= PRIMARY_GRACE_HOURS)
+check("remind-after window is 4h", ENG.REMIND_AFTER_H == 4, f"{ENG.REMIND_AFTER_H}h")
+fresh_h = (now - (now - timedelta(hours=1))).total_seconds() / 3600
+stale_h = (now - (now - timedelta(hours=9))).total_seconds() / 3600
+check("1h-old signal is not nagged yet", fresh_h < ENG.REMIND_AFTER_H)
+check("9h-old signal is nagged", stale_h >= ENG.REMIND_AFTER_H)
 
-# The fill bar must be the first bar strictly AFTER the deadline, never the
-# signal bar: a late executor gets the late price. Synthetic index so the
-# comparison is actually exercised rather than passing on an empty slice.
-signal_bar = pd.Timestamp("2026-10-08 12:00")
-idx = pd.date_range(signal_bar, periods=12, freq="4h")  # 48h of bars
-deadline = signal_bar + pd.Timedelta(hours=PRIMARY_GRACE_HOURS)
-later = idx[idx > deadline]
-check("fill bar exists past the deadline", len(later) > 0, f"{len(later)} candidate bars")
-check("fill bar is strictly after the grace deadline",
-      len(later) > 0 and later[0] > deadline,
-      f"deadline {deadline}, fill bar {later[0]}")
-check("fill bar is NOT the signal bar (no backdated on-time fill)",
-      len(later) > 0 and later[0] != signal_bar,
-      f"signal bar {signal_bar}, fill bar {later[0]}")
-check("fill bar is the FIRST such bar, not a later one",
-      len(later) > 0 and later[0] == pd.Timestamp("2026-10-09 04:00"),
-      str(later[0]))
-
-# An auto-filled signal is a MISS, not a fill - criterion 7 must fail on it.
+# Criterion 7 still fails on anything not executed by the owner, so the bar
+# cannot be lowered by quietly reintroducing an auto-fill later.
 fake = [
     {"symbol": "ETHUSDT", "status": "filled"},
     {"symbol": "ETHUSDT", "status": "autofilled"},
+    {"symbol": "ETHUSDT", "status": "pending"},
     {"symbol": "ETHUSDT", "status": "cancelled"},
     {"symbol": "BTCUSDT", "status": "autofilled"},
 ]
 ex = execution_misses(fake)
-check("auto-filled ETH signal counts as an execution miss",
-      ex["misses"] == 1 and ex["manual"] == 1 and ex["total"] == 2,
+check("unlogged AND any auto-filled ETH signal count as misses",
+      ex["misses"] == 2 and ex["manual"] == 1 and ex["total"] == 3,
       f"misses={ex['misses']} manual={ex['manual']} total={ex['total']}")
 check("cancelled and BTC signals are excluded from criterion 7",
-      ex["total"] == 2, "only non-cancelled ETH signals count")
+      ex["total"] == 3, "only non-cancelled ETH signals count")
 
 print()
 if failures:

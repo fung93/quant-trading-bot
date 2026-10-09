@@ -12,14 +12,15 @@ Read BUILD_PLAN.md before any work.
   ETH primary (owner logs fills at /log), BTC observational (auto-filled,
   excluded from equity/kill switch). Engine: scripts/signal_engine.py,
   every 4h via signal-engine.yml (sync runs first in the same job).
-  **ETH fill safety net**: an ETH signal unlogged for 12h is nagged each run,
-  then auto-filled at the open of the first bar past the deadline so the book
-  cannot freeze (Aug 2026: a late exit dropped two entry crosses). An
-  auto-fill is recorded as an execution MISS - signal status 'autofilled',
-  trade notes 'auto-filled (missed manual log)', excluded from the slippage
-  mean, and criterion 7 FAILS on it. Never make auto-fills count as fills:
-  that would make criterion 7 pass by construction and erase the
-  ETH-manual/BTC-auto contrast that makes BTC a control.
+  **ETH fills are MANUAL, always.** The engine never fills ETH - it only
+  reminds (nag_primary_unlogged, every run once a signal is >4h unlogged).
+  An auto-fill net was added and reverted on 2026-10-09 at the owner's
+  request: criterion 7 scores whether a *human* can execute, so an engine
+  that fills ETH makes it pass by construction and erases the
+  ETH-manual/BTC-auto contrast that makes BTC a control. Do not reintroduce
+  it outside the Amendment rule. review_lib.autofilled_eth_signals() stays as
+  a tripwire - criterion 7 must keep failing on anything the owner did not
+  execute.
   Account: $230 paper, 1% risk, 10% kill switch, 95% position cap,
   measured fees 0.10%/side. Evidence basis: PHASE1D_VERDICT.md (ETH
   validation +1.63%/trade on 80 trades — the lab's first validated cell);
