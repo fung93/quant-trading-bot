@@ -175,6 +175,52 @@ def unlogged_eth_signals(signals):
     return [s for s in signals if s["symbol"] == PRIMARY and s["status"] == "pending"]
 
 
+# Criterion 7 of GO_LIVE_BENCHMARK.md reads, in full: "every fill logged at a
+# faithful price near signal time - no hindsight chasing." That is THREE
+# conditions. The tracker used to check none of them: it checked "are there
+# pending signals", which is a different and far easier question, and so
+# reported MET while the mean fill was ~25h late on a 4h-bar strategy.
+#
+# NEAR_SIGNAL_TIME_H is an OPERATIONALIZATION, not frozen text - the benchmark
+# states no number. One 4h bar is the tightest defensible reading: past one
+# bar the market has moved to a price the signal never referenced. It is
+# printed in the report so it can be argued with. Note it only ever makes the
+# bar harder; the Amendment rule guards against weakening, not tightening.
+NEAR_SIGNAL_TIME_H = 4.0
+
+
+def execution_integrity(signals, slips):
+    """Criterion 7 scored on all three limbs, fail-safe by construction.
+
+    Only status 'filled' counts as owner-executed. Anything else that is not
+    cancelled - 'pending', 'autofilled', 'assisted', or any status added
+    later - counts against the criterion. A new status must never be able to
+    pass this check by default.
+    """
+    acted = [s for s in signals if s["symbol"] == PRIMARY and s["status"] != "cancelled"]
+    pending = [s for s in acted if s["status"] == "pending"]
+    not_owner = [s for s in acted if s["status"] not in ("pending", "filled")]
+    lates = [r for r in slips if r.get("lateness_h") is not None]
+    late = [r for r in lates if r["lateness_h"] > NEAR_SIGNAL_TIME_H]
+    return {
+        "acted": len(acted),
+        "owner": len([s for s in acted if s["status"] == "filled"]),
+        "pending": pending,
+        "not_owner": not_owner,
+        "late": late,
+        "fills": len(lates),
+        "max_late": max((r["lateness_h"] for r in lates), default=0.0),
+        "met": not pending and not not_owner and not late,
+    }
+
+
+def assisted_eth_signals(signals):
+    """ETH signals logged by the assistant on the owner's instruction rather
+    than by the owner. Faithfully priced, but not his execution - and in the
+    one case so far (signal 45) 20.9h after bar close."""
+    return [s for s in signals if s["symbol"] == PRIMARY and s["status"] == "assisted"]
+
+
 def autofilled_eth_signals(signals):
     """ETH signals NOT executed by the owner. The engine no longer auto-fills
     ETH (the 2026-10-09 safety net was reverted the same day), so this should

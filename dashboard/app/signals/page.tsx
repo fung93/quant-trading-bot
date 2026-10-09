@@ -168,6 +168,10 @@ export default async function SignalsPage() {
                       <span className="text-orange-400" title="Safety net filled this - counts as an execution miss">
                         auto-filled (miss)
                       </span>
+                    ) : s.status === "assisted" ? (
+                      <span className="text-orange-400" title="Logged by the assistant on the owner's instruction - not owner-executed under criterion 7">
+                        assisted (not owner-logged)
+                      </span>
                     ) : (
                       <span className="text-gray-400">{s.status}</span>
                     )}

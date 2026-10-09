@@ -23,7 +23,7 @@ export interface SignalRow {
   size_units: number | null;
   size_usd: number | null;
   reasoning: string | null;
-  status: "pending" | "filled" | "cancelled" | "autofilled";
+  status: "pending" | "filled" | "cancelled" | "autofilled" | "assisted";
   trade_id: number | null;
 }
 
@@ -156,6 +156,9 @@ import { getCandles } from "./data";
 
 export const MIN_TRADES = 30;
 export const EXPECTANCY_BAR = 0.5; // percent per trade, after fees
+// Criterion 7 says "near signal time" without a number. One 4h bar is the
+// tightest defensible reading. Keep in sync with scripts/review_lib.py.
+export const NEAR_SIGNAL_TIME_H = 4;
 
 export async function computeGates(): Promise<Gate[]> {
   const closed = await getClosedTrades("ETHUSDT");
@@ -202,14 +205,38 @@ export async function computeGates(): Promise<Gate[]> {
   );
   const stratDd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
 
-  // Criterion 7 scores the OWNER's execution. A signal the engine's safety
-  // net had to fill is a miss, not a fill - counting the net's work as
-  // success would make this criterion pass by construction.
+  // Criterion 7 reads "every fill logged at a faithful price NEAR SIGNAL TIME".
+  // Three limbs, and this used to check none of them - it checked "nothing
+  // pending", and so showed MET while fills ran ~25h late on a 4h-bar
+  // strategy. NEAR_SIGNAL_TIME_H is an interpretation (the benchmark gives no
+  // number); keep it in sync with scripts/review_lib.py.
   const ethSignals = (await getSignals(100)).filter((s) => s.symbol === "ETHUSDT");
-  const pendingEth = ethSignals.filter((s) => s.status === "pending").length;
-  const autoEth = ethSignals.filter((s) => s.status === "autofilled").length;
-  const actedEth = ethSignals.filter((s) => s.status !== "cancelled").length;
-  const manualEth = actedEth - pendingEth - autoEth;
+  const actedSigs = ethSignals.filter((s) => s.status !== "cancelled");
+  const actedEth = actedSigs.length;
+  const pendingEth = actedSigs.filter((s) => s.status === "pending").length;
+  // Fail-safe: only "filled" is owner-executed. Any other status counts against.
+  const ownerEth = actedSigs.filter((s) => s.status === "filled").length;
+  const notOwnerEth = actedEth - pendingEth - ownerEth;
+
+  // Lateness per fill: entry legs from trades.signal_id, exit legs from the
+  // exit signal's trade_id.
+  const sigById = new Map(ethSignals.map((s) => [s.id, s]));
+  const exitSigFor = new Map(
+    ethSignals.filter((s) => s.signal_type === "exit" && s.trade_id).map((s) => [s.trade_id, s])
+  );
+  const lateness: number[] = [];
+  const pushLate = (sig: SignalRow | undefined, stamp: string | null | undefined) => {
+    if (!sig?.bar_open_time || !stamp) return;
+    const barClose = new Date(sig.bar_open_time).getTime() + 4 * 3600_000;
+    lateness.push((new Date(stamp).getTime() - barClose) / 3600_000);
+  };
+  for (const t of closed) {
+    if (t.symbol !== "ETHUSDT") continue;
+    if (t.signal_id) pushLate(sigById.get(t.signal_id), t.opened_at);
+    if (t.closed_at) pushLate(exitSigFor.get(t.id), t.closed_at);
+  }
+  const lateCount = lateness.filter((h) => h > NEAR_SIGNAL_TIME_H).length;
+  const worstLate = lateness.length ? Math.max(...lateness) : 0;
 
   const testable = n >= MIN_TRADES;
   const fmt = (x: number) => (Number.isFinite(x) ? `${x >= 0 ? "+" : ""}${x.toFixed(2)}%` : "n/a");
@@ -250,9 +277,15 @@ export async function computeGates(): Promise<Gate[]> {
       status: !decline20 ? "NOT YET TESTABLE" : stratDd < Math.abs(hodlMaxDd) ? "MET" : "NOT MET",
     },
     {
-      label: "execution integrity (all fills logged by owner)",
-      current: `${manualEth}/${actedEth} manual, ${pendingEth} unlogged, ${autoEth} auto-filled`,
-      status: pendingEth + autoEth === 0 ? "MET" : "NOT MET",
+      label: "execution integrity (faithful price, near signal time)",
+      current:
+        `${ownerEth}/${actedEth} owner-logged` +
+        (pendingEth ? `, ${pendingEth} unlogged` : "") +
+        (notOwnerEth ? `, ${notOwnerEth} not owner-executed` : "") +
+        `, ${lateCount}/${lateness.length} later than ${NEAR_SIGNAL_TIME_H}h` +
+        (lateness.length ? ` (worst ${worstLate.toFixed(1)}h)` : ""),
+      status:
+        pendingEth + notOwnerEth === 0 && lateCount === 0 ? "MET" : "NOT MET",
     },
   ];
 }

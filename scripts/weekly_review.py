@@ -21,7 +21,8 @@ from config.paper_account import INITIAL_CAPITAL_USD, KILL_SWITCH_DD
 from review_lib import (
     EXP, EXPECTED_TRADES_PER_MONTH, MIN_TRADES, _dt, drop_best_test, equity_now,
     eth_slippage, group_stats, hodl_compare, load_all, myt, percentile_bands,
-    streak_context, unlogged_eth_signals, autofilled_eth_signals, execution_misses,
+    streak_context, unlogged_eth_signals, autofilled_eth_signals, assisted_eth_signals,
+    execution_integrity, NEAR_SIGNAL_TIME_H,
 )
 
 REVIEWS = REPO_ROOT / "reviews"
@@ -86,6 +87,16 @@ def build(days=7):
         A("")
     else:
         A("No unlogged ETH signals.")
+        A("")
+
+    assisted = assisted_eth_signals(signals)
+    if assisted:
+        A(f"> **{len(assisted)} ETH signal(s) logged by the assistant, not by you.** "
+          "Faithfully priced, but not your execution - criterion 7 does not count "
+          "them as owner-logged.")
+        for s in assisted:
+            A(f"> - [{s['id']}] {s['signal_type']} ref {s['entry_price']} "
+              f"bar {myt(s['bar_open_time'])}")
         A("")
 
     autofilled = autofilled_eth_signals(signals)
@@ -260,15 +271,19 @@ def build(days=7):
                          "MET" if c6 else "NOT MET"))
             met += c6
 
-    # Criterion 7 scores the OWNER's execution, so an auto-filled signal is a
-    # miss, not a fill. Counting the safety net's work as success would make
-    # this criterion pass by construction the moment logging was automated.
-    ex = execution_misses(signals)
-    c7 = ex["misses"] == 0
-    rows.append(("7. Execution integrity (all fills logged by owner)",
-                 f"{ex['manual']}/{ex['total']} manual, {len(ex['pending'])} unlogged, "
-                 f"{len(ex['autofilled'])} auto-filled",
-                 "MET" if c7 else "NOT MET"))
+    # Criterion 7 is "every fill logged at a faithful price near signal time".
+    # All three limbs, not just "nothing pending".
+    ei = execution_integrity(signals, slips)
+    c7 = ei["met"]
+    bits = [f"{ei['owner']}/{ei['acted']} owner-logged"]
+    if ei["pending"]:
+        bits.append(f"{len(ei['pending'])} unlogged")
+    if ei["not_owner"]:
+        bits.append(f"{len(ei['not_owner'])} not owner-executed")
+    bits.append(f"{len(ei['late'])}/{ei['fills']} later than {NEAR_SIGNAL_TIME_H:.0f}h "
+                f"(worst {ei['max_late']:.1f}h)")
+    rows.append(("7. Execution integrity (faithful price, near signal time)",
+                 ", ".join(bits), "MET" if c7 else "NOT MET"))
     met += c7
 
     A("| criterion | current | status |")
@@ -281,6 +296,16 @@ def build(days=7):
     A("Passing all seven makes Phase 4 *eligible for consideration* - never automatic. "
       "Criteria marked NOT YET TESTABLE are not counted as met: a gate that was never "
       "tested is not a gate that was passed.")
+    A("")
+    A(f"> Criterion 7 reads \"every fill logged at a faithful price **near signal "
+      f"time**\". The benchmark states no number, so this report scores \"near\" as "
+      f"within **{NEAR_SIGNAL_TIME_H:.0f}h** - one 4h bar, the tightest defensible "
+      f"reading, since past one bar the market has moved to a price the signal never "
+      f"referenced. That threshold is an interpretation and is open to argument; it "
+      f"only ever makes the bar harder, and the Amendment rule guards against "
+      f"weakening, not tightening. Until 2026-10-09 this criterion was scored as "
+      f"\"no pending signals\", which checked none of its three limbs and reported "
+      f"MET throughout.")
     A("")
     A(f"Kill switch: {'ACTIVE' if kill else 'never triggered'} | equity drawdown "
       f"{dd:.1f}% vs {KILL_SWITCH_DD * 100:.0f}% paper kill line")
