@@ -23,7 +23,7 @@ export interface SignalRow {
   size_units: number | null;
   size_usd: number | null;
   reasoning: string | null;
-  status: "pending" | "filled" | "cancelled";
+  status: "pending" | "filled" | "cancelled" | "autofilled";
   trade_id: number | null;
 }
 
@@ -202,9 +202,14 @@ export async function computeGates(): Promise<Gate[]> {
   );
   const stratDd = peak > 0 ? ((peak - equity) / peak) * 100 : 0;
 
-  const pendingEth = (await getSignals(100)).filter(
-    (s) => s.symbol === "ETHUSDT" && s.status === "pending"
-  ).length;
+  // Criterion 7 scores the OWNER's execution. A signal the engine's safety
+  // net had to fill is a miss, not a fill - counting the net's work as
+  // success would make this criterion pass by construction.
+  const ethSignals = (await getSignals(100)).filter((s) => s.symbol === "ETHUSDT");
+  const pendingEth = ethSignals.filter((s) => s.status === "pending").length;
+  const autoEth = ethSignals.filter((s) => s.status === "autofilled").length;
+  const actedEth = ethSignals.filter((s) => s.status !== "cancelled").length;
+  const manualEth = actedEth - pendingEth - autoEth;
 
   const testable = n >= MIN_TRADES;
   const fmt = (x: number) => (Number.isFinite(x) ? `${x >= 0 ? "+" : ""}${x.toFixed(2)}%` : "n/a");
@@ -245,9 +250,9 @@ export async function computeGates(): Promise<Gate[]> {
       status: !decline20 ? "NOT YET TESTABLE" : stratDd < Math.abs(hodlMaxDd) ? "MET" : "NOT MET",
     },
     {
-      label: "execution integrity (all fills logged)",
-      current: `${pendingEth} unlogged`,
-      status: pendingEth === 0 ? "MET" : "NOT MET",
+      label: "execution integrity (all fills logged by owner)",
+      current: `${manualEth}/${actedEth} manual, ${pendingEth} unlogged, ${autoEth} auto-filled`,
+      status: pendingEth + autoEth === 0 ? "MET" : "NOT MET",
     },
   ];
 }

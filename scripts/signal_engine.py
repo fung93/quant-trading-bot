@@ -311,11 +311,109 @@ def retry_unsent(client) -> None:
             client.table("signals").update({"telegram_sent": True}).eq("id", s["id"]).execute()
 
 
+# ------------------------------------------------- primary fill safety net
+
+PRIMARY_GRACE_HOURS = 12  # owner's window to log before the net catches it
+
+
+def fill_primary_safety_net(client, df) -> None:
+    """ETH is the owner's to execute: the manual log is what measures whether
+    a *human* can actually run this strategy, and criterion 7 of
+    GO_LIVE_BENCHMARK.md scores exactly that. But an unlogged signal does not
+    merely leave a gap in the measurement - it freezes the book. August 2026:
+    an exit logged two days late kept the engine in exit-check mode and
+    dropped two entry crosses out of the sample entirely.
+
+    So: nag while the owner still has time, then fill it anyway and SAY SO.
+    An auto-filled ETH trade is recorded as an execution MISS, not as a fill -
+    trade notes say 'auto-filled (missed manual log)', the signal goes to
+    status 'autofilled' rather than 'filled', and criterion 7 counts it as a
+    failure. Filling ETH silently would make criterion 7 pass by
+    construction, which is lowering the bar rather than clearing it, and
+    would erase the ETH-manual / BTC-auto contrast that makes BTC a control.
+
+    Fill price is the open of the first bar AFTER the grace window, never the
+    signal bar: a late executor gets the late price and the record must show
+    it.
+    """
+    import pandas as pd
+
+    res = (
+        client.table("signals").select("*")
+        .eq("strategy", STRATEGY_ID).eq("symbol", PRIMARY).eq("status", "pending")
+        .order("bar_open_time").execute()
+    )
+    for sig in res.data:
+        created = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
+        age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+
+        if age_h < PRIMARY_GRACE_HOURS:
+            tg_send(
+                f"REMINDER ({age_h:.0f}h): {PRIMARY} {sig['signal_type']} signal "
+                f"is still unlogged. Log your fill at /log within "
+                f"{PRIMARY_GRACE_HOURS - age_h:.0f}h, or the engine fills it for "
+                f"you and records an execution miss against criterion 7."
+            )
+            continue
+
+        deadline = pd.Timestamp(created + timedelta(hours=PRIMARY_GRACE_HOURS)).tz_convert(None)
+        later = df.index[df.index > deadline]
+        if len(later) == 0:
+            continue  # grace just expired, no bar yet; fill on a later run
+        fill_bar = later[0]
+        fill_price = float(df.loc[fill_bar, "Open"])
+        note = "auto-filled (missed manual log)"
+
+        if sig["signal_type"] == "entry":
+            trade = client.table("trades").insert({
+                "signal_id": sig["id"], "mode": "paper", "notes": note,
+                "symbol": PRIMARY, "strategy": STRATEGY_ID,
+                "opened_at": fill_bar.isoformat(),
+                "entry_actual": fill_price,
+                "stop_loss": sig["stop_loss"],
+                "size_units": sig["size_units"], "size_usd": sig["size_usd"],
+                "outcome": "open",
+            }).execute()
+            client.table("signals").update(
+                {"status": "autofilled", "trade_id": trade.data[0]["id"]}
+            ).eq("id", sig["id"]).execute()
+            print(f"[ETH net] entry auto-filled at {fill_price} ({fill_bar})", flush=True)
+            tg_send(
+                f"AUTO-FILLED {PRIMARY} entry at {fill_price:.2f} ({myt(fill_bar)}) - "
+                f"signal went {age_h:.0f}h unlogged. Recorded as an execution miss; "
+                f"the position is open and the book is consistent again."
+            )
+        else:  # exit
+            if not sig.get("trade_id"):
+                continue
+            t = client.table("trades").select("*").eq("id", sig["trade_id"]).execute().data
+            if not t or t[0]["outcome"] != "open":
+                client.table("signals").update({"status": "cancelled"}).eq("id", sig["id"]).execute()
+                continue
+            t = t[0]
+            pnl_pct = net_return(float(t["entry_actual"]), fill_price)
+            pnl_usd = float(t["size_usd"]) * pnl_pct
+            outcome = "win" if pnl_pct > 0 else ("loss" if pnl_pct < 0 else "breakeven")
+            client.table("trades").update({
+                "closed_at": fill_bar.isoformat(), "exit_actual": fill_price,
+                "pnl_pct": pnl_pct, "pnl_usd": pnl_usd, "outcome": outcome,
+                "notes": f"{t.get('notes') or ''}; exit {note}".lstrip("; "),
+            }).eq("id", t["id"]).execute()
+            client.table("signals").update({"status": "autofilled"}).eq("id", sig["id"]).execute()
+            print(f"[ETH net] exit auto-filled at {fill_price}, pnl {pnl_pct * 100:+.2f}%", flush=True)
+            tg_send(
+                f"AUTO-FILLED {PRIMARY} exit at {fill_price:.2f} ({myt(fill_bar)}) - "
+                f"signal went {age_h:.0f}h unlogged. Net {pnl_pct * 100:+.2f}% "
+                f"(${pnl_usd:+.2f}). Recorded as an execution miss."
+            )
+
+
 # ----------------------------------------------------- observational fills
 
 def fill_observational(client, df) -> None:
     """BTC only: fill pending signals at the open of the bar AFTER the
-    signal bar, once that bar exists. ETH is never auto-filled."""
+    signal bar, once that bar exists. ETH is auto-filled only by the
+    safety net above, and only as a recorded miss."""
     last_open = df.index[-1]
     res = (
         client.table("signals").select("*")
@@ -380,6 +478,8 @@ def process_symbol(client, symbol: str, equity: float, kill_active: bool) -> Non
 
     if symbol == OBSERVATIONAL:
         fill_observational(client, df)
+    else:
+        fill_primary_safety_net(client, df)
 
     mom = momentum(close, LOOKBACK_N)
     atr_arr = atr(df["High"].to_numpy(), df["Low"].to_numpy(), close, ATR_N)

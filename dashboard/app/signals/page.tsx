@@ -164,6 +164,10 @@ export default async function SignalsPage() {
                       <span className="text-sky-400">observational</span>
                     ) : s.status === "pending" ? (
                       <span className="text-amber-400">awaiting log</span>
+                    ) : s.status === "autofilled" ? (
+                      <span className="text-orange-400" title="Safety net filled this - counts as an execution miss">
+                        auto-filled (miss)
+                      </span>
                     ) : (
                       <span className="text-gray-400">{s.status}</span>
                     )}

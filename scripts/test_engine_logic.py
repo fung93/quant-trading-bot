@@ -92,6 +92,57 @@ s_t = size_position(230.0, float(df["Close"].iloc[t]), float(a_t))
 check("sizing valid at the cross bar", s_t is not None and s_t["stop"] > 0,
       f"close {df['Close'].iloc[t]:.2f}, stop {s_t['stop']:.2f}, ${s_t['size_usd']:.2f}")
 
+# 5. Primary fill safety net: grace window, honest fill bar, miss accounting.
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+from review_lib import execution_misses  # noqa: E402
+from signal_engine import PRIMARY_GRACE_HOURS  # noqa: E402
+
+check("grace window is 12h", PRIMARY_GRACE_HOURS == 12, f"{PRIMARY_GRACE_HOURS}h")
+
+# A signal younger than the grace window must NOT be filled yet.
+now = datetime.now(timezone.utc)
+young = now - timedelta(hours=PRIMARY_GRACE_HOURS - 1)
+old = now - timedelta(hours=PRIMARY_GRACE_HOURS + 9)
+check("fresh signal is inside grace (nag, do not fill)",
+      (now - young).total_seconds() / 3600 < PRIMARY_GRACE_HOURS)
+check("stale signal is past grace (fill it)",
+      (now - old).total_seconds() / 3600 >= PRIMARY_GRACE_HOURS)
+
+# The fill bar must be the first bar strictly AFTER the deadline, never the
+# signal bar: a late executor gets the late price. Synthetic index so the
+# comparison is actually exercised rather than passing on an empty slice.
+signal_bar = pd.Timestamp("2026-10-08 12:00")
+idx = pd.date_range(signal_bar, periods=12, freq="4h")  # 48h of bars
+deadline = signal_bar + pd.Timedelta(hours=PRIMARY_GRACE_HOURS)
+later = idx[idx > deadline]
+check("fill bar exists past the deadline", len(later) > 0, f"{len(later)} candidate bars")
+check("fill bar is strictly after the grace deadline",
+      len(later) > 0 and later[0] > deadline,
+      f"deadline {deadline}, fill bar {later[0]}")
+check("fill bar is NOT the signal bar (no backdated on-time fill)",
+      len(later) > 0 and later[0] != signal_bar,
+      f"signal bar {signal_bar}, fill bar {later[0]}")
+check("fill bar is the FIRST such bar, not a later one",
+      len(later) > 0 and later[0] == pd.Timestamp("2026-10-09 04:00"),
+      str(later[0]))
+
+# An auto-filled signal is a MISS, not a fill - criterion 7 must fail on it.
+fake = [
+    {"symbol": "ETHUSDT", "status": "filled"},
+    {"symbol": "ETHUSDT", "status": "autofilled"},
+    {"symbol": "ETHUSDT", "status": "cancelled"},
+    {"symbol": "BTCUSDT", "status": "autofilled"},
+]
+ex = execution_misses(fake)
+check("auto-filled ETH signal counts as an execution miss",
+      ex["misses"] == 1 and ex["manual"] == 1 and ex["total"] == 2,
+      f"misses={ex['misses']} manual={ex['manual']} total={ex['total']}")
+check("cancelled and BTC signals are excluded from criterion 7",
+      ex["total"] == 2, "only non-cancelled ETH signals count")
+
 print()
 if failures:
     print(f"{len(failures)} FAILURE(S): {failures}")

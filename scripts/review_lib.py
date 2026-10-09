@@ -125,31 +125,47 @@ def drop_best_test(pcts):
 
 def eth_slippage(trades, signals):
     """The measured gap between model and human: signal reference price vs
-    the owner's actual logged fill. Phase 3's most valuable output."""
+    the owner's actual logged fill. Phase 3's most valuable output.
+
+    BOTH legs are measured. An earlier version keyed only off trades.signal_id,
+    which holds the ENTRY signal - so exit fills produced no row at all, and
+    exit lateness, the thing that froze the book in August 2026, was invisible.
+    """
     by_id = {s["id"]: s for s in signals}
+    exit_sig_for = {
+        s["trade_id"]: s for s in signals
+        if s["symbol"] == PRIMARY and s["signal_type"] == "exit" and s.get("trade_id")
+    }
     rows = []
-    for t in trades:
-        if t["symbol"] != PRIMARY or not t.get("signal_id"):
-            continue
-        sig = by_id.get(t["signal_id"])
-        if not sig or sig.get("entry_price") is None:
-            continue
+
+    def add(t, sig, actual, stamp):
+        if not sig or sig.get("entry_price") is None or actual is None:
+            return
         ref = float(sig["entry_price"])
-        actual = float(t["entry_actual"]) if t.get("entry_actual") else None
-        if actual is None:
-            continue
+        actual = float(actual)
         # entry: paying above reference is adverse. exit: selling below is adverse.
         slip = (actual - ref) / ref * 100
         adverse = slip if sig["signal_type"] == "entry" else -slip
         lateness_h = None
-        if sig.get("bar_open_time") and t.get("opened_at"):
+        if sig.get("bar_open_time") and stamp:
             bar_close = _dt(sig["bar_open_time"]) + timedelta(hours=4)
-            lateness_h = (_dt(t["opened_at"]) - bar_close).total_seconds() / 3600
+            lateness_h = (_dt(stamp) - bar_close).total_seconds() / 3600
         rows.append({
             "trade_id": t["id"], "signal_id": sig["id"], "type": sig["signal_type"],
             "ref": ref, "actual": actual, "slip_pct": slip,
             "adverse_pct": adverse, "lateness_h": lateness_h,
+            # A safety-net fill is not human execution and must not be averaged
+            # into the model-vs-human gap.
+            "source": "auto" if sig.get("status") == "autofilled" else "manual",
         })
+
+    for t in trades:
+        if t["symbol"] != PRIMARY:
+            continue
+        if t.get("signal_id"):
+            add(t, by_id.get(t["signal_id"]), t.get("entry_actual"), t.get("opened_at"))
+        if t.get("closed_at"):
+            add(t, exit_sig_for.get(t["id"]), t.get("exit_actual"), t.get("closed_at"))
     return rows
 
 
@@ -159,14 +175,41 @@ def unlogged_eth_signals(signals):
     return [s for s in signals if s["symbol"] == PRIMARY and s["status"] == "pending"]
 
 
+def autofilled_eth_signals(signals):
+    """ETH signals the engine's safety net had to fill because they went
+    past the grace window unlogged. The net keeps the book consistent; it
+    does not make the miss go away. These are execution failures and
+    criterion 7 must count them as such - otherwise automating the log
+    would make the criterion pass by construction."""
+    return [s for s in signals if s["symbol"] == PRIMARY and s["status"] == "autofilled"]
+
+
+def execution_misses(signals):
+    """Criterion 7's real denominator: still-unlogged + auto-filled."""
+    pend = unlogged_eth_signals(signals)
+    auto = autofilled_eth_signals(signals)
+    acted = [s for s in signals if s["symbol"] == PRIMARY and s["status"] != "cancelled"]
+    return {
+        "pending": pend,
+        "autofilled": auto,
+        "misses": len(pend) + len(auto),
+        "total": len(acted),
+        "manual": len(acted) - len(pend) - len(auto),
+    }
+
+
 def equity_now(client, trades):
     eth_closed = sum(float(t["pnl_usd"] or 0) for t in trades
                      if t["symbol"] == PRIMARY and t["outcome"] != "open")
     mtm = 0.0
-    price = None
+    # Fetch the price unconditionally. An earlier version only fetched it when
+    # a position was open, so the moment the book went flat - which is most of
+    # the time, since this strategy sits out more than it holds - price fell to
+    # None, hodl_compare() returned None, and criteria 2, 5 and 6 silently
+    # dropped out of a table that claims to mirror all seven.
+    price = float(fetch_recent_4h(PRIMARY)["Close"].iloc[-1])
     openp = [t for t in trades if t["symbol"] == PRIMARY and t["outcome"] == "open"]
     if openp:
-        price = float(fetch_recent_4h(PRIMARY)["Close"].iloc[-1])
         t = openp[0]
         mtm = float(t["size_usd"]) * net_return(float(t["entry_actual"]), price)
     return INITIAL_CAPITAL_USD + eth_closed + mtm, eth_closed, mtm, price

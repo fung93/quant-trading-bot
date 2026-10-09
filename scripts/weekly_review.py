@@ -21,7 +21,7 @@ from config.paper_account import INITIAL_CAPITAL_USD, KILL_SWITCH_DD
 from review_lib import (
     EXP, EXPECTED_TRADES_PER_MONTH, MIN_TRADES, _dt, drop_best_test, equity_now,
     eth_slippage, group_stats, hodl_compare, load_all, myt, percentile_bands,
-    streak_context, unlogged_eth_signals,
+    streak_context, unlogged_eth_signals, autofilled_eth_signals, execution_misses,
 )
 
 REVIEWS = REPO_ROOT / "reviews"
@@ -86,6 +86,16 @@ def build(days=7):
         A("")
     else:
         A("No unlogged ETH signals.")
+        A("")
+
+    autofilled = autofilled_eth_signals(signals)
+    if autofilled:
+        A(f"> **{len(autofilled)} ETH signal(s) AUTO-FILLED by the safety net** - the "
+          "book stayed consistent, but these were not executed by the owner and "
+          "criterion 7 counts them as misses.")
+        for s in autofilled:
+            A(f"> - [{s['id']}] {s['signal_type']} ref {s['entry_price']} "
+              f"bar {myt(s['bar_open_time'])}")
         A("")
 
     # ---------------- 2. groups, never mixed ----------------
@@ -163,18 +173,29 @@ def build(days=7):
     if not slips:
         A("No logged ETH fills yet - slippage unavailable.")
     else:
-        A("| trade | type | signal ref | actual fill | slippage | adverse | logged after bar close |")
-        A("|---|---|---|---|---|---|---|")
+        A("| trade | leg | source | signal ref | actual fill | slippage | adverse | logged after bar close |")
+        A("|---|---|---|---|---|---|---|---|")
         for r in slips:
             late = f"{r['lateness_h']:.1f}h" if r["lateness_h"] is not None else "-"
-            A(f"| #{r['trade_id']} | {r['type']} | {r['ref']:.2f} | {r['actual']:.2f} | "
-              f"{r['slip_pct']:+.3f}% | {r['adverse_pct']:+.3f}% | {late} |")
-        adv = sum(r["adverse_pct"] for r in slips) / len(slips)
-        lates = [r["lateness_h"] for r in slips if r["lateness_h"] is not None]
+            A(f"| #{r['trade_id']} | {r['type']} | {r['source']} | {r['ref']:.2f} | "
+              f"{r['actual']:.2f} | {r['slip_pct']:+.3f}% | {r['adverse_pct']:+.3f}% | {late} |")
+        # The model-vs-human gap is measured over fills a human actually made.
+        manual = [r for r in slips if r["source"] == "manual"]
+        auto = [r for r in slips if r["source"] == "auto"]
+        lates = [r["lateness_h"] for r in manual if r["lateness_h"] is not None]
         A("")
-        A(f"**Mean adverse slippage: {adv:+.3f}% per fill** over {len(slips)} fill(s). "
-          "This is the real gap between the model and your execution, and it feeds "
-          "Phase 4 planning directly.")
+        if manual:
+            adv = sum(r["adverse_pct"] for r in manual) / len(manual)
+            A(f"**Mean adverse slippage: {adv:+.3f}% per fill** over {len(manual)} "
+              "owner-executed fill(s). This is the real gap between the model and your "
+              "execution, and it feeds Phase 4 planning directly.")
+        else:
+            A("No owner-executed fills in the record - slippage against the model is "
+              "unmeasured.")
+        if auto:
+            A("")
+            A(f"{len(auto)} fill(s) were made by the safety net, not by you, and are "
+              "excluded from the figures above. They count as misses under criterion 7.")
         if lates:
             A("")
             A(f"Mean logging lateness: **{sum(lates) / len(lates):.1f}h**. Lateness is a "
@@ -239,9 +260,15 @@ def build(days=7):
                          "MET" if c6 else "NOT MET"))
             met += c6
 
-    c7 = len(unlogged) == 0
-    rows.append(("7. Execution integrity (all fills logged)",
-                 f"{len(unlogged)} unlogged", "MET" if c7 else "NOT MET"))
+    # Criterion 7 scores the OWNER's execution, so an auto-filled signal is a
+    # miss, not a fill. Counting the safety net's work as success would make
+    # this criterion pass by construction the moment logging was automated.
+    ex = execution_misses(signals)
+    c7 = ex["misses"] == 0
+    rows.append(("7. Execution integrity (all fills logged by owner)",
+                 f"{ex['manual']}/{ex['total']} manual, {len(ex['pending'])} unlogged, "
+                 f"{len(ex['autofilled'])} auto-filled",
+                 "MET" if c7 else "NOT MET"))
     met += c7
 
     A("| criterion | current | status |")
