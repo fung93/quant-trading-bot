@@ -1,8 +1,17 @@
 "use client";
 
-// Manual fill logging for ETH (Phase 2 Task 3): shows the latest pending
-// ETH signal pre-filled with its reference price; the owner adjusts to the
-// actual decision price, enters the PIN, submits. Seconds on a phone.
+// Manual fill logging for ETH (Phase 2 Task 3).
+//
+// The price field starts EMPTY and must stay that way. It used to pre-fill
+// with the signal's reference price, so submitting without editing recorded a
+// perfect 0.000% slippage - and that is exactly what happened on every fill
+// the owner logged (trades 2, 10 and 16, all reading 0.000%). The slippage
+// metric that review_lib calls "Phase 3's most valuable output" was measuring
+// nothing: the form was answering its own question.
+//
+// Reference and live price are shown as read-only context so the number typed
+// is a decision, not a default. Do not reintroduce a pre-filled value or a
+// one-tap autofill button.
 
 import { useEffect, useState } from "react";
 import { fmtMYT, getSignals, type SignalRow } from "@/lib/paper";
@@ -15,17 +24,42 @@ export default function LogPage() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [live, setLive] = useState<number | null>(null);
+  const [liveAt, setLiveAt] = useState<string | null>(null);
 
   useEffect(() => {
     getSignals(20)
       .then((rows) => {
-        const s = rows.find((r) => r.symbol === "ETHUSDT" && r.status === "pending") ?? null;
-        setSignal(s);
-        if (s?.entry_price) setPrice(String(s.entry_price));
+        // Deliberately NOT setting price here - see the note at the top.
+        setSignal(rows.find((r) => r.symbol === "ETHUSDT" && r.status === "pending") ?? null);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, []);
+
+  // Live spot, refreshed while the form is open, as context for the typed price.
+  useEffect(() => {
+    if (!signal) return;
+    let alive = true;
+    const pull = async () => {
+      try {
+        const r = await fetch(`/api/price?symbol=${signal.symbol}`, { cache: "no-store" });
+        const j = await r.json();
+        if (alive && r.ok && typeof j.price === "number") {
+          setLive(j.price);
+          setLiveAt(new Date(j.at).toLocaleTimeString());
+        }
+      } catch {
+        /* context only - never block logging on a price fetch */
+      }
+    };
+    pull();
+    const id = setInterval(pull, 15_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [signal]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -87,13 +121,38 @@ export default function LogPage() {
             {signal.reasoning}
           </p>
 
+          <div className="grid grid-cols-2 gap-2 rounded-md border border-white/10 bg-black/20 p-2 text-xs">
+            <div>
+              <div className="text-gray-500">Signal reference</div>
+              <div className="font-mono text-gray-300">
+                {signal.entry_price ?? "-"}
+              </div>
+            </div>
+            <div>
+              <div className="text-gray-500">Live now</div>
+              <div className="font-mono text-gray-300">
+                {live !== null ? live.toFixed(2) : "…"}
+                {live !== null && signal.entry_price && (
+                  <span className="ml-1 text-gray-500">
+                    ({((live / Number(signal.entry_price) - 1) * 100).toFixed(2)}%)
+                  </span>
+                )}
+              </div>
+              {liveAt && <div className="text-[10px] text-gray-600">{liveAt}</div>}
+            </div>
+          </div>
+
           <label className="block text-sm">
             <span className="text-gray-400">Actual {signal.signal_type} price (USD)</span>
             <input
-              type="number" step="any" required value={price}
+              type="number" step="any" required value={price} placeholder="type the price you see"
               onChange={(e) => setPrice(e.target.value)}
               className="mt-1 w-full rounded-md border border-white/15 bg-black/30 px-3 py-2 font-mono"
             />
+            <span className="mt-1 block text-[11px] leading-relaxed text-gray-500">
+              Deliberately blank. The two numbers above are context, not an answer -
+              type what you could actually transact at, so slippage measures something.
+            </span>
           </label>
 
           <label className="block text-sm">
