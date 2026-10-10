@@ -112,6 +112,24 @@ check("engine auto-fills ONLY the observational symbol",
       'nag_primary_unlogged(client, df)' in inspect.getsource(ENG.process_symbol)
       and 'fill_observational(client, df)' in inspect.getsource(ENG.process_symbol))
 
+# myt() must survive every shape a timestamp arrives in. Supabase hands back
+# ISO STRINGS; passing one in crashed process_symbol for ETH on 2026-10-09
+# whenever a signal was waiting to be logged (6 engine failures, an entry
+# delivered 18.7h late). Exercise the real call the nagger makes.
+import pandas as pd  # noqa: E402
+
+check("myt accepts an ISO string with Z",
+      ENG.myt("2026-10-09T16:00:00Z") == "2026-10-10 00:00 MYT",
+      ENG.myt("2026-10-09T16:00:00Z"))
+check("myt accepts an ISO string with +00:00 offset",
+      ENG.myt("2026-10-09T16:00:00+00:00") == "2026-10-10 00:00 MYT")
+check("myt accepts a naive ISO string (treated as UTC)",
+      ENG.myt("2026-10-09T16:00:00") == "2026-10-10 00:00 MYT")
+check("myt accepts a datetime",
+      ENG.myt(datetime(2026, 10, 9, 16, 0, tzinfo=timezone.utc)) == "2026-10-10 00:00 MYT")
+check("myt accepts a pandas Timestamp",
+      ENG.myt(pd.Timestamp("2026-10-09 16:00")) == "2026-10-10 00:00 MYT")
+
 # Nag only after the owner has had a realistic chance to see the alert.
 now = datetime.now(timezone.utc)
 check("remind-after window is 4h", ENG.REMIND_AFTER_H == 4, f"{ENG.REMIND_AFTER_H}h")

@@ -92,8 +92,23 @@ BACKTEST_STATS = {
 # ---------------------------------------------------------------- utilities
 
 def myt(ts) -> str:
-    """UTC timestamp -> 'YYYY-MM-DD HH:MM MYT' (UTC+8) for messages."""
-    t = ts if isinstance(ts, datetime) else ts.to_pydatetime()
+    """UTC timestamp -> 'YYYY-MM-DD HH:MM MYT' (UTC+8) for messages.
+
+    Accepts a datetime, a pandas Timestamp, or an ISO STRING. The string case
+    is not hypothetical: Supabase returns bar_open_time as text, and on
+    2026-10-09 nag_primary_unlogged() passed one straight in. myt() raised
+    'str' object has no attribute to_pydatetime, which killed process_symbol
+    for ETH on every run that had a signal waiting to be logged - six
+    consecutive engine failures, and an entry signal delivered 18.7h late at
+    a stale reference price. The reminder meant to help the owner log on time
+    was the thing stopping signals from reaching him.
+    """
+    if isinstance(ts, datetime):
+        t = ts
+    elif isinstance(ts, str):
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    else:
+        t = ts.to_pydatetime()
     if t.tzinfo is None:
         t = t.replace(tzinfo=timezone.utc)
     return (t + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M MYT")
