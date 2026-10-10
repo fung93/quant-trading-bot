@@ -133,10 +133,75 @@ check("myt accepts a pandas Timestamp",
 # Nag only after the owner has had a realistic chance to see the alert.
 now = datetime.now(timezone.utc)
 check("remind-after window is 4h", ENG.REMIND_AFTER_H == 4, f"{ENG.REMIND_AFTER_H}h")
-fresh_h = (now - (now - timedelta(hours=1))).total_seconds() / 3600
-stale_h = (now - (now - timedelta(hours=9))).total_seconds() / 3600
-check("1h-old signal is not nagged yet", fresh_h < ENG.REMIND_AFTER_H)
-check("9h-old signal is nagged", stale_h >= ENG.REMIND_AFTER_H)
+
+# Drive the REAL function against Supabase-shaped rows. The previous version
+# of this test asserted on the guard arithmetic only and passed happily while
+# nag_primary_unlogged() crashed in production on every run - because the
+# arithmetic was never the problem; feeding a TEXT timestamp into myt() was.
+# A test that does not make the call cannot catch what the call does.
+import types  # noqa: E402
+
+
+class _FakeQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def order(self, *a, **k):
+        return self
+
+    def execute(self):
+        return types.SimpleNamespace(data=self._rows)
+
+
+class _FakeClient:
+    """Mimics only the chain nag_primary_unlogged() actually uses."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, name):
+        return _FakeQuery(self._rows if name == "signals" else [])
+
+
+def _row(age_h):
+    # Exactly the shape Supabase returns: every timestamp is a STRING.
+    return {
+        "id": 99, "symbol": "ETHUSDT", "signal_type": "entry", "status": "pending",
+        "bar_open_time": "2026-10-09T16:00:00+00:00",
+        "entry_price": 2477.54, "stop_loss": 2408.37,
+        "created_at": (now - timedelta(hours=age_h)).isoformat(),
+    }
+
+
+sent: list[str] = []
+_real_send = ENG.tg_send
+ENG.tg_send = lambda text: (sent.append(text), True)[1]
+try:
+    sent.clear()
+    ENG.nag_primary_unlogged(_FakeClient([_row(9)]), None)
+    check("nagger runs on a real Supabase-shaped row without raising", True)
+    check("9h-old signal produces exactly one reminder", len(sent) == 1, f"{len(sent)} sent")
+    check("reminder renders the bar time (the myt() crash path)",
+          bool(sent) and "2026-10-10 00:00 MYT" in sent[0],
+          sent[0].splitlines()[0] if sent else "nothing sent")
+    check("reminder says the engine will NOT fill it",
+          bool(sent) and "will not" in sent[0].lower())
+
+    sent.clear()
+    ENG.nag_primary_unlogged(_FakeClient([_row(1)]), None)
+    check("1h-old signal is not nagged yet", len(sent) == 0, f"{len(sent)} sent")
+
+    sent.clear()
+    ENG.nag_primary_unlogged(_FakeClient([]), None)
+    check("no pending signals -> silence", len(sent) == 0)
+finally:
+    ENG.tg_send = _real_send
 
 # Criterion 7 still fails on anything not executed by the owner, so the bar
 # cannot be lowered by quietly reintroducing an auto-fill later.

@@ -665,6 +665,19 @@ def main() -> None:
         failures.append(str(exc))
 
     if failures:
+        # Say so OUT LOUD, every failing run. On 2026-10-10 the engine failed
+        # six times in a row over 19h and nobody knew: the run was red on
+        # GitHub, but the daily heartbeat still went out saying "engine alive"
+        # (it is sent after symbol processing and does not look at failures),
+        # so the only outward sign was a signal arriving 18.7h late. A red run
+        # nobody is told about is an outage.
+        tg_send(
+            "ENGINE FAILED - this run did not complete.\n"
+            + "\n".join(f"- {f}" for f in failures)
+            + "\n\nSignals may be delayed or missing until this is fixed. "
+              "Check the Actions log; the catch-up scan will sweep any bars "
+              "that were skipped once a run succeeds."
+        )
         print("Engine failed for: " + "; ".join(failures), file=sys.stderr)
         sys.exit(1)
 

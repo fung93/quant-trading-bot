@@ -12,6 +12,12 @@ Read BUILD_PLAN.md before any work.
   ETH primary (owner logs fills at /log), BTC observational (auto-filled,
   excluded from equity/kill switch). Engine: scripts/signal_engine.py,
   every 4h via signal-engine.yml (sync runs first in the same job).
+  **Position size is recomputed at log time** from the price actually
+  filled, never inherited from the signal (/api/log). The rule is "risk 1%
+  of equity"; units are derived from it. A late fill at a worse price with
+  an unchanged stop silently breaks that rule - 2026-10-10, 1.48% risk on
+  a signal delivered 18.7h late. A failing engine run now also alerts on
+  Telegram: six silent red runs preceded that incident.
   **ETH fills are MANUAL, always.** The engine never fills ETH - it only
   reminds (nag_primary_unlogged, every run once a signal is >4h unlogged).
   An auto-fill net was added and reverted on 2026-10-09 at the owner's

@@ -7,6 +7,8 @@ export const INITIAL_CAPITAL_USD = 230; // config/paper_account.py
 export const MYR_PER_USD = 4.35; // display only, never accounting
 export const KILL_SWITCH_DD = 0.1; // 10% peak-to-trough
 export const COST_PER_SIDE = 0.001; // backtest/config.py (0.10%/side measured)
+export const RISK_PER_TRADE = 0.01; // config/paper_account.py
+export const MAX_POSITION_PCT = 0.95; // config/paper_account.py
 
 import { getSupabase } from "./supabase";
 

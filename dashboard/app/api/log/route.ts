@@ -7,7 +7,12 @@
 // PIN is the real gate; this just slows brute force).
 
 import { createClient } from "@supabase/supabase-js";
-import { COST_PER_SIDE } from "@/lib/paper";
+import {
+  COST_PER_SIDE,
+  INITIAL_CAPITAL_USD,
+  MAX_POSITION_PCT,
+  RISK_PER_TRADE,
+} from "@/lib/paper";
 
 export const runtime = "nodejs";
 
@@ -80,17 +85,48 @@ export async function POST(req: Request) {
   const now = new Date().toISOString();
 
   if (sig.signal_type === "entry") {
+    // Size from the price ACTUALLY filled, never from the signal's unit count.
+    //
+    // The rule is "risk 1% of equity"; the unit count is derived from it using
+    // the signal-bar price. Inheriting those units after a late fill breaks
+    // the rule silently: on 2026-10-10 a signal arrived 18.7h late, the fill
+    // was +1.33% above the reference with the stop unchanged, and the
+    // signal's units would have risked $4.24 = 1.48% of equity against a
+    // $2.87 budget. The kill switch assumes every trade risks 1%.
+    const stop = Number(sig.stop_loss);
+    if (!(stop > 0) || price <= stop) {
+      return Response.json(
+        { error: `Fill ${price} is at or below the stop ${stop} - the trade is already invalid. Check the price.` },
+        { status: 400 }
+      );
+    }
+
+    // Equity for sizing: starting capital plus realized ETH P&L. There is
+    // never an open ETH position at entry time (one position at a time).
+    const { data: closedRows } = await db
+      .from("trades").select("pnl_usd")
+      .eq("symbol", "ETHUSDT").eq("mode", "paper").not("closed_at", "is", null);
+    const equity =
+      INITIAL_CAPITAL_USD +
+      (closedRows ?? []).reduce((a, r) => a + Number(r.pnl_usd ?? 0), 0);
+
+    let units = (equity * RISK_PER_TRADE) / (price - stop);
+    const cap = (equity * MAX_POSITION_PCT) / price;
+    const capped = units > cap;
+    if (capped) units = cap;
+    const sizeUsd = units * price;
+
     const { data: trade, error } = await db.from("trades").insert({
       signal_id: sig.id,
       mode: "paper",
-      notes: "manual fill",
+      notes: capped ? "manual fill; size capped at 95% of equity" : "manual fill",
       symbol: sig.symbol,
       strategy: sig.strategy,
       opened_at: now,
       entry_actual: price,
-      stop_loss: sig.stop_loss,
-      size_units: sig.size_units,
-      size_usd: sig.size_usd,
+      stop_loss: stop,
+      size_units: units,
+      size_usd: sizeUsd,
       outcome: "open",
     }).select().single();
     if (error) return Response.json({ error: error.message }, { status: 500 });
