@@ -275,13 +275,18 @@ def build(days=7):
     # All three limbs, not just "nothing pending".
     ei = execution_integrity(signals, slips)
     c7 = ei["met"]
-    bits = [f"{ei['owner']}/{ei['acted']} owner-logged"]
+    bits = []
     if ei["pending"]:
-        bits.append(f"{len(ei['pending'])} unlogged")
-    if ei["not_owner"]:
-        bits.append(f"{len(ei['not_owner'])} not owner-executed")
+        bits.append(f"{len(ei['pending'])} UNLOGGED")
     bits.append(f"{len(ei['late'])}/{ei['fills']} later than {NEAR_SIGNAL_TIME_H:.0f}h "
                 f"(worst {ei['max_late']:.1f}h)")
+    # Who executed is reported as information, not as pass/fail.
+    who = [f"{ei['owner']} by owner"]
+    if ei["auto"]:
+        who.append(f"{ei['auto']} by engine")
+    if ei["assisted"]:
+        who.append(f"{ei['assisted']} assisted")
+    bits.append("executed: " + ", ".join(who))
     rows.append(("7. Execution integrity (faithful price, near signal time)",
                  ", ".join(bits), "MET" if c7 else "NOT MET"))
     met += c7
@@ -304,8 +309,12 @@ def build(days=7):
       f"referenced. That threshold is an interpretation and is open to argument; it "
       f"only ever makes the bar harder, and the Amendment rule guards against "
       f"weakening, not tightening. Until 2026-10-09 this criterion was scored as "
-      f"\"no pending signals\", which checked none of its three limbs and reported "
-      f"MET throughout.")
+      f"\"no pending signals\", which checked none of its limbs and reported MET "
+      f"throughout. From 2026-10-09 to 10-12 it also required every fill to be "
+      f"owner-executed; that was an addition of mine, not the frozen text, and it "
+      f"was removed when the owner moved execution to the engine. The benchmark "
+      f"names no executor and says plainly that paper cannot test him - his "
+      f"execution is tested by the mandated Phase 4 dry run.")
     A("")
     A(f"Kill switch: {'ACTIVE' if kill else 'never triggered'} | equity drawdown "
       f"{dd:.1f}% vs {KILL_SWITCH_DD * 100:.0f}% paper kill line")

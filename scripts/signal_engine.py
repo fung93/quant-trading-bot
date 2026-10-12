@@ -328,28 +328,20 @@ def retry_unsent(client) -> None:
 
 # --------------------------------------------- primary unlogged-fill nagger
 
-REMIND_AFTER_H = 4  # don't nag before the owner has had a realistic chance
+REMIND_AFTER_H = 4  # one bar: below this the next bar may not exist yet
 
 
-def nag_primary_unlogged(client, df) -> None:
-    """ETH fills are the OWNER'S to make - the engine never fills them.
+def warn_primary_unfilled(client, df) -> None:
+    """Alarm for an ETH signal the engine has NOT managed to fill.
 
-    The manual log is what measures whether a *human* can run this strategy,
-    and criterion 7 of GO_LIVE_BENCHMARK.md scores exactly that. An engine
-    that fills ETH would make criterion 7 pass by construction and erase the
-    ETH-manual / BTC-auto contrast that makes BTC a control group. This
-    function therefore writes NOTHING to trades. It only reminds.
+    Since 2026-10-12 the engine fills both symbols at the next bar open, so a
+    pending ETH signal older than a few hours means the fill did not happen -
+    the engine was down, the next bar was missing, or the fill was refused.
+    That is a hole in the sample and criterion 7 fails on it, so say so rather
+    than let it sit silent. The owner can always still log it at /log.
 
-    (An auto-fill safety net was briefly added on 2026-10-09 and reverted the
-    same day at the owner's request. Do not reintroduce it without the
-    Amendment rule in GO_LIVE_BENCHMARK.md.)
-
-    A late log no longer corrupts the sample: last_exit_bar() widens the entry
-    scan back to the most recent completed exit, so entry crosses that are
-    still live are recovered once the exit is finally logged (that is how
-    signal 29 -> trade 10 was rescued in August 2026). Lateness still costs
-    fill quality, which eth_slippage() measures - it just cannot silently
-    delete trades any more.
+    This function writes NOTHING to trades. (It is also where the engine died
+    for 19h on 2026-10-09: it passed a Supabase TEXT timestamp into myt().)
     """
     res = (
         client.table("signals").select("*")
@@ -360,32 +352,64 @@ def nag_primary_unlogged(client, df) -> None:
         created = datetime.fromisoformat(sig["created_at"].replace("Z", "+00:00"))
         age_h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
         if age_h < REMIND_AFTER_H:
-            continue  # the original alert is recent enough; no nagging yet
+            continue  # the next bar may simply not have opened yet
         tg_send(
-            f"STILL UNLOGGED ({age_h:.0f}h): {PRIMARY} {sig['signal_type']} signal, "
+            f"UNFILLED ({age_h:.0f}h): {PRIMARY} {sig['signal_type']} signal, "
             f"reference {sig['entry_price']}, bar {myt(sig['bar_open_time'])}.\n"
-            f"Nothing is recorded until you log it at /log - the engine will not "
-            f"fill it for you. Log the price you actually see when you log it, "
-            f"not the reference."
+            f"The engine fills at the next bar open and should have done this "
+            f"already, so something is wrong - check the Actions log. You can "
+            f"also log it yourself at /log."
         )
-        print(f"[ETH] nagged: signal {sig['id']} unlogged {age_h:.1f}h", flush=True)
+        print(f"[ETH] WARNING: signal {sig['id']} unfilled {age_h:.1f}h", flush=True)
 
 
 # ----------------------------------------------------- observational fills
 
-def fill_observational(client, df) -> None:
-    """BTC only: fill pending signals at the open of the bar AFTER the
-    signal bar, once that bar exists. ETH is auto-filled only by the
-    safety net above, and only as a recorded miss."""
+def size_for_fill(equity: float, price: float, stop: float) -> tuple[float, float] | None:
+    """Units and notional for a fill at `price`, risking RISK_PER_TRADE.
+
+    Never inherit the signal's unit count. Those units were derived from the
+    SIGNAL-BAR price; a fill at a different price with the same stop changes
+    the money at risk. On 2026-10-10 that put 1.48% at risk against a 1% rule.
+    """
+    if not (price > stop > 0):
+        return None
+    units = (equity * RISK_PER_TRADE) / (price - stop)
+    units = min(units, (equity * MAX_POSITION_PCT) / price)
+    return units, units * price
+
+
+def auto_fill(client, df, symbol: str, equity: float) -> None:
+    """Fill pending signals at the OPEN of the bar after the signal bar.
+
+    That price is the one the strategy could actually have transacted at: the
+    momentum flip is only known once the bar closes, so the signal bar's close
+    is not available to act on. It is also what backtesting.py assumes, so the
+    paper book and the backtest are measuring the same thing.
+
+    Both symbols now use this. ETH was manual until 2026-10-12, when the owner
+    chose to let the engine execute; his late logging had been corrupting the
+    sample it was supposed to protect (two crosses dropped entirely in August,
+    a 1.33% worse entry in October, ~24h mean lateness on a 4h-bar strategy).
+    Criterion 7 of GO_LIVE_BENCHMARK.md asks for "a faithful price near signal
+    time" and names no executor; a next-bar-open fill satisfies it honestly
+    rather than by construction. The owner's own execution is tested by Phase
+    4's mandated 2-week dry run, which the benchmark already requires.
+
+    ETH fills are marked 'autofilled' so the record always shows what executed
+    them. That is information, not a penalty.
+    """
+    import pandas as pd
+
+    observational = symbol == OBSERVATIONAL
+    tag = "BTC obs" if observational else "ETH auto"
     last_open = df.index[-1]
     res = (
         client.table("signals").select("*")
-        .eq("strategy", STRATEGY_ID).eq("symbol", OBSERVATIONAL).eq("status", "pending")
+        .eq("strategy", STRATEGY_ID).eq("symbol", symbol).eq("status", "pending")
         .order("bar_open_time").execute()
     )
     for sig in res.data:
-        import pandas as pd
-
         bar = pd.Timestamp(sig["bar_open_time"]).tz_localize(None)
         if bar >= last_open:
             continue  # next bar not closed yet; fill on a later run
@@ -394,21 +418,41 @@ def fill_observational(client, df) -> None:
             continue
         fill_bar = later[0]
         fill_price = float(df.loc[fill_bar, "Open"])
+        status = "filled" if observational else "autofilled"
 
         if sig["signal_type"] == "entry":
+            if observational:
+                units = sig["size_units"]
+                size_usd = sig["size_usd"]
+            else:
+                sized = size_for_fill(equity, fill_price, float(sig["stop_loss"]))
+                if sized is None:
+                    print(f"[{tag}] entry SKIPPED: fill {fill_price} at/below stop "
+                          f"{sig['stop_loss']}", file=sys.stderr)
+                    client.table("signals").update({"status": "cancelled"}).eq("id", sig["id"]).execute()
+                    continue
+                units, size_usd = sized
             trade = client.table("trades").insert({
-                "signal_id": sig["id"], "mode": "paper", "notes": "observational",
-                "symbol": OBSERVATIONAL, "strategy": STRATEGY_ID,
+                "signal_id": sig["id"], "mode": "paper",
+                "notes": "observational" if observational else "auto-filled at next bar open",
+                "symbol": symbol, "strategy": STRATEGY_ID,
                 "opened_at": fill_bar.isoformat(),
                 "entry_actual": fill_price,
                 "stop_loss": sig["stop_loss"],
-                "size_units": sig["size_units"], "size_usd": sig["size_usd"],
+                "size_units": units, "size_usd": size_usd,
                 "outcome": "open",
             }).execute()
             client.table("signals").update(
-                {"status": "filled", "trade_id": trade.data[0]["id"]}
+                {"status": status, "trade_id": trade.data[0]["id"]}
             ).eq("id", sig["id"]).execute()
-            print(f"[BTC obs] entry filled at {fill_price} ({fill_bar})", flush=True)
+            print(f"[{tag}] entry filled at {fill_price} ({fill_bar})", flush=True)
+            if not observational:
+                tg_send(
+                    f"FILLED {symbol} entry at {fill_price:.2f} ({myt(fill_bar)}) - "
+                    f"{units:.6f} ETH = ${size_usd:.2f}, stop {float(sig['stop_loss']):.2f}, "
+                    f"risking ${units * (fill_price - float(sig['stop_loss'])):.2f} "
+                    f"({RISK_PER_TRADE * 100:.0f}% of ${equity:.2f}). Nothing for you to do."
+                )
         else:  # exit
             if not sig.get("trade_id"):
                 continue
@@ -424,8 +468,14 @@ def fill_observational(client, df) -> None:
                 "closed_at": fill_bar.isoformat(), "exit_actual": fill_price,
                 "pnl_pct": pnl_pct, "pnl_usd": pnl_usd, "outcome": outcome,
             }).eq("id", t["id"]).execute()
-            client.table("signals").update({"status": "filled"}).eq("id", sig["id"]).execute()
-            print(f"[BTC obs] exit filled at {fill_price}, pnl {pnl_pct * 100:+.2f}%", flush=True)
+            client.table("signals").update({"status": status}).eq("id", sig["id"]).execute()
+            print(f"[{tag}] exit filled at {fill_price}, pnl {pnl_pct * 100:+.2f}%", flush=True)
+            if not observational:
+                tg_send(
+                    f"CLOSED {symbol} at {fill_price:.2f} ({myt(fill_bar)}) - "
+                    f"{pnl_pct * 100:+.2f}% after fees (${pnl_usd:+.2f}), {outcome}. "
+                    f"Nothing for you to do."
+                )
 
 
 # ------------------------------------------------------------ symbol logic
@@ -439,10 +489,13 @@ def process_symbol(client, symbol: str, equity: float, kill_active: bool) -> Non
     if n < LOOKBACK_N + 2:
         raise RuntimeError(f"{symbol}: only {n} 4h bars, need {LOOKBACK_N + 2}")
 
-    if symbol == OBSERVATIONAL:
-        fill_observational(client, df)
-    else:
-        nag_primary_unlogged(client, df)
+    # Both symbols auto-fill at next bar open since 2026-10-12. The nagger
+    # remains as a backstop: if a fill could not be made (engine down, bad
+    # data), the signal stays pending and the owner is told rather than it
+    # sitting silent.
+    auto_fill(client, df, symbol, equity)
+    if symbol == PRIMARY:
+        warn_primary_unfilled(client, df)
 
     mom = momentum(close, LOOKBACK_N)
     atr_arr = atr(df["High"].to_numpy(), df["Low"].to_numpy(), close, ATR_N)

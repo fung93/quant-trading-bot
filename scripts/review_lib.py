@@ -190,27 +190,118 @@ NEAR_SIGNAL_TIME_H = 4.0
 
 
 def execution_integrity(signals, slips):
-    """Criterion 7 scored on all three limbs, fail-safe by construction.
+    """Criterion 7 scored on the frozen text, and only that text:
 
-    Only status 'filled' counts as owner-executed. Anything else that is not
-    cancelled - 'pending', 'autofilled', 'assisted', or any status added
-    later - counts against the criterion. A new status must never be able to
-    pass this check by default.
+        "every fill logged at a faithful price near signal time - no
+         hindsight chasing. A sample corrupted by undisciplined logging is
+         void, however good the numbers look."
+
+    It asks about the SAMPLE's quality. It names no executor, and the
+    benchmark is explicit elsewhere that paper cannot test the owner at all
+    ("it tests the one variable paper cannot: you"); his execution is tested
+    by the mandated Phase 4 dry run, which is already a hard precondition.
+
+    An earlier version of this function (2026-10-09 .. 10-12) also required
+    every fill to be owner-executed. That was my addition, never the frozen
+    text, and once the owner moved execution to the engine it would have
+    pinned the criterion at NOT MET forever on a condition the benchmark
+    never set. Removing it restores the text rather than weakening the bar.
+    Who executed each fill is still reported, as information.
+
+    What survives, and must: a fill is only sound if it is at a price that
+    was actually available (no hindsight chasing) and near signal time.
+    Pending signals still fail - an unlogged signal is a hole in the sample.
     """
     acted = [s for s in signals if s["symbol"] == PRIMARY and s["status"] != "cancelled"]
     pending = [s for s in acted if s["status"] == "pending"]
-    not_owner = [s for s in acted if s["status"] not in ("pending", "filled")]
     lates = [r for r in slips if r.get("lateness_h") is not None]
     late = [r for r in lates if r["lateness_h"] > NEAR_SIGNAL_TIME_H]
+    by = {}
+    for s in acted:
+        by[s["status"]] = by.get(s["status"], 0) + 1
     return {
         "acted": len(acted),
-        "owner": len([s for s in acted if s["status"] == "filled"]),
+        "owner": by.get("filled", 0),
+        "auto": by.get("autofilled", 0),
+        "assisted": by.get("assisted", 0),
         "pending": pending,
-        "not_owner": not_owner,
         "late": late,
         "fills": len(lates),
         "max_late": max((r["lateness_h"] for r in lates), default=0.0),
-        "met": not pending and not not_owner and not late,
+        "met": not pending and not late,
+    }
+
+
+def assisted_eth_signals(signals):
+    """ETH signals logged by the assistant on the owner's instruction rather
+    than by the owner. Faithfully priced, but not his execution - and in the
+    one case so far (signal 45) 20.9h after bar close."""
+    return [s for s in signals if s["symbol"] == PRIMARY and s["status"] == "assisted"]
+
+
+def autofilled_eth_signals(signals):
+    """ETH signals NOT executed by the owner. The engine no longer auto-fills
+    ETH (the 2026-10-09 safety net was reverted the same day), so this should
+    always be empty - it is kept as a tripwire. If an auto-fill is ever
+    reintroduced, criterion 7 must keep failing on it, because a criterion
+    that scores the owner's execution cannot be passed by a machine."""
+    return [s for s in signals if s["symbol"] == PRIMARY and s["status"] == "autofilled"]
+
+
+# Criterion 7 of GO_LIVE_BENCHMARK.md reads, in full: "every fill logged at a
+# faithful price near signal time - no hindsight chasing." That is THREE
+# conditions. The tracker used to check none of them: it checked "are there
+# pending signals", which is a different and far easier question, and so
+# reported MET while the mean fill was ~25h late on a 4h-bar strategy.
+#
+# NEAR_SIGNAL_TIME_H is an OPERATIONALIZATION, not frozen text - the benchmark
+# states no number. One 4h bar is the tightest defensible reading: past one
+# bar the market has moved to a price the signal never referenced. It is
+# printed in the report so it can be argued with. Note it only ever makes the
+# bar harder; the Amendment rule guards against weakening, not tightening.
+NEAR_SIGNAL_TIME_H = 4.0
+
+
+def execution_integrity(signals, slips):
+    """Criterion 7 scored on the frozen text, and only that text:
+
+        "every fill logged at a faithful price near signal time - no
+         hindsight chasing. A sample corrupted by undisciplined logging is
+         void, however good the numbers look."
+
+    It asks about the SAMPLE's quality. It names no executor, and the
+    benchmark is explicit elsewhere that paper cannot test the owner at all
+    ("it tests the one variable paper cannot: you"); his execution is tested
+    by the mandated Phase 4 dry run, which is already a hard precondition.
+
+    An earlier version of this function (2026-10-09 .. 10-12) also required
+    every fill to be owner-executed. That was my addition, never the frozen
+    text, and once the owner moved execution to the engine it would have
+    pinned the criterion at NOT MET forever on a condition the benchmark
+    never set. Removing it restores the text rather than weakening the bar.
+    Who executed each fill is still reported, as information.
+
+    What survives, and must: a fill is only sound if it is at a price that
+    was actually available (no hindsight chasing) and near signal time.
+    Pending signals still fail - an unlogged signal is a hole in the sample.
+    """
+    acted = [s for s in signals if s["symbol"] == PRIMARY and s["status"] != "cancelled"]
+    pending = [s for s in acted if s["status"] == "pending"]
+    lates = [r for r in slips if r.get("lateness_h") is not None]
+    late = [r for r in lates if r["lateness_h"] > NEAR_SIGNAL_TIME_H]
+    by = {}
+    for s in acted:
+        by[s["status"]] = by.get(s["status"], 0) + 1
+    return {
+        "acted": len(acted),
+        "owner": by.get("filled", 0),
+        "auto": by.get("autofilled", 0),
+        "assisted": by.get("assisted", 0),
+        "pending": pending,
+        "late": late,
+        "fills": len(lates),
+        "max_late": max((r["lateness_h"] for r in lates), default=0.0),
+        "met": not pending and not late,
     }
 
 

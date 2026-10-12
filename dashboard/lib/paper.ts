@@ -216,9 +216,12 @@ export async function computeGates(): Promise<Gate[]> {
   const actedSigs = ethSignals.filter((s) => s.status !== "cancelled");
   const actedEth = actedSigs.length;
   const pendingEth = actedSigs.filter((s) => s.status === "pending").length;
-  // Fail-safe: only "filled" is owner-executed. Any other status counts against.
+  // Who executed is INFORMATION, not pass/fail. The frozen text names no
+  // executor, and an owner-execution requirement (mine, 10-09..10-12) would
+  // pin this at NOT MET forever once the engine took over on 2026-10-12.
   const ownerEth = actedSigs.filter((s) => s.status === "filled").length;
-  const notOwnerEth = actedEth - pendingEth - ownerEth;
+  const autoEth = actedSigs.filter((s) => s.status === "autofilled").length;
+  const assistedEth = actedSigs.filter((s) => s.status === "assisted").length;
 
   // Lateness per fill: entry legs from trades.signal_id, exit legs from the
   // exit signal's trade_id.
@@ -281,13 +284,13 @@ export async function computeGates(): Promise<Gate[]> {
     {
       label: "execution integrity (faithful price, near signal time)",
       current:
-        `${ownerEth}/${actedEth} owner-logged` +
-        (pendingEth ? `, ${pendingEth} unlogged` : "") +
-        (notOwnerEth ? `, ${notOwnerEth} not owner-executed` : "") +
-        `, ${lateCount}/${lateness.length} later than ${NEAR_SIGNAL_TIME_H}h` +
-        (lateness.length ? ` (worst ${worstLate.toFixed(1)}h)` : ""),
-      status:
-        pendingEth + notOwnerEth === 0 && lateCount === 0 ? "MET" : "NOT MET",
+        (pendingEth ? `${pendingEth} UNLOGGED, ` : "") +
+        `${lateCount}/${lateness.length} later than ${NEAR_SIGNAL_TIME_H}h` +
+        (lateness.length ? ` (worst ${worstLate.toFixed(1)}h)` : "") +
+        ` · executed: ${ownerEth} owner` +
+        (autoEth ? `, ${autoEth} engine` : "") +
+        (assistedEth ? `, ${assistedEth} assisted` : ""),
+      status: pendingEth === 0 && lateCount === 0 ? "MET" : "NOT MET",
     },
   ];
 }

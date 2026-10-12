@@ -97,20 +97,29 @@ import inspect  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
 import signal_engine as ENG  # noqa: E402
-from review_lib import execution_misses  # noqa: E402
 
-check("no ETH auto-fill function exists",
-      not hasattr(ENG, "fill_primary_safety_net"),
-      "ETH fills are the owner's; reverted 2026-10-09")
-
-src = inspect.getsource(ENG.nag_primary_unlogged)
-check("nagger never writes to trades", ".table(\"trades\")" not in src,
+src = inspect.getsource(ENG.warn_primary_unfilled)
+check("unfilled-alarm never writes to trades", ".table(\"trades\")" not in src,
       "reminder only - no insert/update of trades")
-check("nagger never marks a signal filled", "autofilled" not in src and
-      '"status": "filled"' not in src, "signal status untouched")
-check("engine auto-fills ONLY the observational symbol",
-      'nag_primary_unlogged(client, df)' in inspect.getsource(ENG.process_symbol)
-      and 'fill_observational(client, df)' in inspect.getsource(ENG.process_symbol))
+check("engine auto-fills BOTH symbols since 2026-10-12",
+      'auto_fill(client, df, symbol, equity)' in inspect.getsource(ENG.process_symbol))
+
+# Sizing at the fill price is the whole point - never inherit signal units.
+# On 2026-10-10 inherited units put 1.48% at risk against a 1% rule.
+EQ = 286.79
+u, usd = ENG.size_for_fill(EQ, 2510.60, 2408.37)
+check("fill sizing risks exactly RISK_PER_TRADE",
+      abs(u * (2510.60 - 2408.37) - EQ * 0.01) < 1e-6,
+      f"{u:.6f} ETH = ${usd:.2f}, risk ${u * (2510.60 - 2408.37):.2f}")
+check("a worse fill price gets a SMALLER position",
+      ENG.size_for_fill(EQ, 2550.0, 2408.37)[0] < u,
+      "further from stop -> fewer units, same 1% risk")
+check("the 95% cap still binds on a very tight stop",
+      ENG.size_for_fill(EQ, 2510.60, 2510.0)[1] <= EQ * 0.95 + 1e-9)
+check("a fill at or below the stop is refused",
+      ENG.size_for_fill(EQ, 2408.37, 2408.37) is None
+      and ENG.size_for_fill(EQ, 2400.0, 2408.37) is None,
+      "cannot risk a non-positive distance")
 
 # myt() must survive every shape a timestamp arrives in. Supabase hands back
 # ISO STRINGS; passing one in crashed process_symbol for ETH on 2026-10-09
@@ -184,40 +193,53 @@ _real_send = ENG.tg_send
 ENG.tg_send = lambda text: (sent.append(text), True)[1]
 try:
     sent.clear()
-    ENG.nag_primary_unlogged(_FakeClient([_row(9)]), None)
-    check("nagger runs on a real Supabase-shaped row without raising", True)
-    check("9h-old signal produces exactly one reminder", len(sent) == 1, f"{len(sent)} sent")
-    check("reminder renders the bar time (the myt() crash path)",
+    ENG.warn_primary_unfilled(_FakeClient([_row(9)]), None)
+    check("unfilled-alarm runs on a real Supabase-shaped row without raising", True)
+    check("9h-old unfilled signal produces one alarm", len(sent) == 1, f"{len(sent)} sent")
+    check("alarm renders the bar time (the myt() crash path)",
           bool(sent) and "2026-10-10 00:00 MYT" in sent[0],
           sent[0].splitlines()[0] if sent else "nothing sent")
-    check("reminder says the engine will NOT fill it",
-          bool(sent) and "will not" in sent[0].lower())
+    check("alarm says the engine SHOULD have filled it",
+          bool(sent) and "should have" in sent[0].lower())
 
     sent.clear()
-    ENG.nag_primary_unlogged(_FakeClient([_row(1)]), None)
-    check("1h-old signal is not nagged yet", len(sent) == 0, f"{len(sent)} sent")
+    ENG.warn_primary_unfilled(_FakeClient([_row(1)]), None)
+    check("1h-old signal is not alarmed yet", len(sent) == 0, f"{len(sent)} sent")
 
     sent.clear()
-    ENG.nag_primary_unlogged(_FakeClient([]), None)
+    ENG.warn_primary_unfilled(_FakeClient([]), None)
     check("no pending signals -> silence", len(sent) == 0)
 finally:
     ENG.tg_send = _real_send
 
-# Criterion 7 still fails on anything not executed by the owner, so the bar
-# cannot be lowered by quietly reintroducing an auto-fill later.
-fake = [
+# Criterion 7 scores the FROZEN TEXT: a faithful price near signal time. It
+# names no executor, so who filled is reported but does not decide pass/fail.
+# What must still fail it: an unlogged signal (a hole in the sample) and a
+# fill far from signal time (a price the strategy could not have had).
+from review_lib import execution_integrity, NEAR_SIGNAL_TIME_H as NEAR  # noqa: E402
+
+fake_sigs = [
     {"symbol": "ETHUSDT", "status": "filled"},
     {"symbol": "ETHUSDT", "status": "autofilled"},
-    {"symbol": "ETHUSDT", "status": "pending"},
+    {"symbol": "ETHUSDT", "status": "assisted"},
     {"symbol": "ETHUSDT", "status": "cancelled"},
     {"symbol": "BTCUSDT", "status": "autofilled"},
 ]
-ex = execution_misses(fake)
-check("unlogged AND any auto-filled ETH signal count as misses",
-      ex["misses"] == 2 and ex["manual"] == 1 and ex["total"] == 3,
-      f"misses={ex['misses']} manual={ex['manual']} total={ex['total']}")
-check("cancelled and BTC signals are excluded from criterion 7",
-      ex["total"] == 3, "only non-cancelled ETH signals count")
+timely = [{"lateness_h": 0.1}, {"lateness_h": 2.0}, {"lateness_h": 3.9}]
+ei = execution_integrity(fake_sigs, timely)
+check("engine-filled and assisted fills do NOT fail criterion 7",
+      ei["met"], f"owner={ei['owner']} auto={ei['auto']} assisted={ei['assisted']}")
+check("cancelled and BTC signals are excluded", ei["acted"] == 3)
+check("who executed is still reported",
+      ei["owner"] == 1 and ei["auto"] == 1 and ei["assisted"] == 1)
+
+check("an UNLOGGED signal still fails criterion 7",
+      not execution_integrity(fake_sigs + [{"symbol": "ETHUSDT", "status": "pending"}],
+                              timely)["met"],
+      "a pending signal is a hole in the sample")
+check("a fill later than the window still fails criterion 7",
+      not execution_integrity(fake_sigs, timely + [{"lateness_h": NEAR + 0.1}])["met"],
+      f"beyond {NEAR}h the price is one the strategy could not have had")
 
 print()
 if failures:

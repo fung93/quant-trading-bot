@@ -18,20 +18,22 @@ Read BUILD_PLAN.md before any work.
   an unchanged stop silently breaks that rule - 2026-10-10, 1.48% risk on
   a signal delivered 18.7h late. A failing engine run now also alerts on
   Telegram: six silent red runs preceded that incident.
-  **ETH fills are MANUAL, always.** The engine never fills ETH - it only
-  reminds (nag_primary_unlogged, every run once a signal is >4h unlogged).
-  An auto-fill net was added and reverted on 2026-10-09 at the owner's
-  request: criterion 7 scores whether a *human* can execute, so an engine
-  that fills ETH makes it pass by construction and erases the
-  ETH-manual/BTC-auto contrast that makes BTC a control. Do not reintroduce
-  it outside the Amendment rule. review_lib.autofilled_eth_signals() stays as
-  a tripwire - criterion 7 must keep failing on anything the owner did not
-  execute.
-  Account: $230 paper, 1% risk, 10% kill switch, 95% position cap,
-  measured fees 0.10%/side. Evidence basis: PHASE1D_VERDICT.md (ETH
-  validation +1.63%/trade on 80 trades — the lab's first validated cell);
-  EXPERIMENT_LEDGER.md tracks all families. strategies/tsmom_v1.py is now
-  IMMUTABLE (paper mode).
+  **BOTH symbols auto-fill at next bar open** (auto_fill in signal_engine).
+  That is the price the strategy could actually transact at and what
+  backtesting.py assumes. ETH was manual until 2026-10-12, when the owner
+  moved execution to the engine; his late logging had been corrupting the
+  sample (two crosses dropped in Aug, a 1.33% worse entry in Oct, ~24h mean
+  lateness on 4h bars). ETH fills are marked status 'autofilled' so the
+  record shows what executed them - information, not a penalty.
+  **Size is always recomputed at the fill price** (size_for_fill, and
+  /api/log for manual logs): never inherit the signal's unit count, which
+  was derived from the signal-bar price. warn_primary_unfilled alarms if an
+  ETH signal stays pending >4h, which now means a fill FAILED.
+  Criterion 7 is scored on its frozen text only - "a faithful price near
+  signal time" - which names no executor. An owner-execution requirement
+  (mine, 2026-10-09..10-12) was removed: the benchmark says plainly that
+  paper cannot test the owner, and routes that to the mandated Phase 4
+  2-week dry run. Pending signals and fills beyond 4h still fail it.
   **Real-capital gate is pre-registered and FROZEN in
   backtest/reports/GO_LIVE_BENCHMARK.md** (≥30 ETH trades, ≥+0.5%/trade
   after fees, survived a drawdown, beat HODL risk-adjusted, legal/tax
