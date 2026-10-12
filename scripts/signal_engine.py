@@ -710,6 +710,17 @@ def main() -> None:
             print(f"[{symbol}] FAILED: {exc}", file=sys.stderr)
             failures.append(f"{symbol}: {exc}")
 
+    # Second fill pass. process_symbol fills at its START, so a signal it
+    # writes during this run would otherwise wait for the next run - up to 4h
+    # of the book showing a position that should already be open or closed.
+    # The fill PRICE is next-bar-open either way, so this costs nothing but a
+    # refetch and keeps the record current. Never allowed to fail the run.
+    for symbol in (PRIMARY, OBSERVATIONAL):
+        try:
+            auto_fill(client, fetch_recent_4h(symbol, HISTORY_DAYS), symbol, equity)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{symbol}] second fill pass failed: {exc}", file=sys.stderr)
+
     try:
         retry_unsent(client)
         heartbeat(client, equity, kill_active)
